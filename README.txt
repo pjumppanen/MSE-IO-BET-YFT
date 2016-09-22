@@ -36,4 +36,4 @@ make clean
 make
 
 then copy the libMseom.so file from the folder adt/objs/sample/Mseom/.libs
-to the lib folder under the MSE-IO-BET-YFT project.
+to the lib folder under the MSE-IO-BET-YFT project...
