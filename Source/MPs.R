@@ -9,8 +9,16 @@
 # ===============================================================================================================
 
 
+MP_FunctionExports <- c()
+
+
 #Pella-Tomlinson 40:10-type MPs (details implemented below)
 #===============================================================================
+
+PT41.tune.9<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp))
+}
+class(PT41.tune.9)<-"IO_MP_tune"
 
 PT41.100.9<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0){
   return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=CMaxProp))
@@ -127,6 +135,7 @@ class(IT3.50)<-"IO_MP"
 
 
 
+MP_FunctionExports <- c(MP_FunctionExports, "PellaTomlinson4010")
 
 # Pella Tomlinson Production model with generic 40-10 type rule - MPs are defined with tuning parameters above
 PellaTomlinson4010<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0, deltaTACLimUp=0.9, deltaTACLimDown=0.9){
@@ -174,6 +183,8 @@ if(min(TACE)<0){print("MP TACE<0");browser()}
   return(TACE)
 }
 
+
+MP_FunctionExports <- c(MP_FunctionExports, "PT.f")
 
 #Pella-Tomlinson Model function
 PT.f <- function(params, C_hist,I_hist, CMCsum, p, doPlot=F, returnOpt=1){
@@ -227,6 +238,8 @@ for(p in c(-100:200)/100){
 }
 
 
+
+MP_FunctionExports <- c(MP_FunctionExports, "CPUETarget")
 
 #MP resembling first level of ETBF Harvest Strategy (CPUE slope to target)
 #Raise or lower TAC proportional to (recent weighted average) Index difference from a target
@@ -540,7 +553,6 @@ CC50CE1.0bet <- function(x,pset){ # mix of constant catch and effort for BET
   return(TACE)
 }
 class(CC50CE1.0bet)<-"IO_MP"
-
 
 
 

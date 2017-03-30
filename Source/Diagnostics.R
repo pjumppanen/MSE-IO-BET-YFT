@@ -27,15 +27,17 @@ getperf <- function(object)
 
 
 #DK modified summary for MWG statistics
-tableMSE.f <- function(object,percentiles=c(0.1,0.25,0.5,0.75,0.9))
+tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, nsimSub=NA)
 {
-  stats <- NULL
+  stats     <- NULL
   MSEobj    <- object
-  nsim      <- MSEobj@nsim
   npop      <- MSEobj@npop
   proyears  <- MSEobj@proyears
   allyears  <- MSEobj@proyears + MSEobj@nyears
-  nMPs      <- MSEobj@nMPs
+  MPs       <- if (any(is.na(MPsSub))) 1:MSEobj@nMPs else MPsSub
+  Sims      <- if (any(is.na(nsimSub))) 1:MSEobj@nsim else nsimSub
+  nsim      <- length(Sims)
+  nMPs      <- length(MPs)
   ntargpop  <- length(MSEobj@targpop)
 
   firstMPy  <- MSEobj@nyears + MSEobj@firstMPYr - MSEobj@lastCalendarYr
@@ -45,84 +47,84 @@ tableMSE.f <- function(object,percentiles=c(0.1,0.25,0.5,0.75,0.9))
 
   for (pp in projPeriodList)
   {
-    projPeriod  <-(firstMPy):(firstMPy + pp -1)
+    projPeriod   <-(firstMPy):(firstMPy + pp -1)
     projPeriodm1 <-(firstMPy-1):(firstMPy + pp -2)
 
     #Performance statistics dim(nMPs, nsim) #numbers from final report
     #1
-    SBoSB0   <- round(apply(as.karray(MSEobj@SSB_SSB0)[,,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    SBoSB0        <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #2 - min SB relative to SB0
-    minSBoSB0 <- round(apply(as.karray(MSEobj@SSB_SSB0)[,,,projPeriod], MARGIN=c(1:2), min), digits=3)
+    minSBoSB0     <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), min), digits=3)
 
     #3
-    SBoSBMSY <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    SBoSBMSY      <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #4
-    FoFMSY     <- round(apply(as.karray(MSEobj@F_FMSY)[,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    FoFMSY        <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #5 = #4 in this case...Ftarget = FMSY
-    FoFtarg     <- round(apply(as.karray(MSEobj@F_FMSY)[,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    FoFtarg       <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #6 - Probability in green Kobe quadrant
-    GK <- round(apply(as.karray(MSEobj@F_FMSY)[,,projPeriod] < 1 & as.karray(MSEobj@SSB_SSBMSY)[,,projPeriod] > 1, 1:2, sum) / (pp), 3)
+    GK            <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] < 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] > 1, 1:2, sum) / (pp), 3)
 
     #7 - Probability in red Kobe quadrant
-    RK <-round(apply(as.karray(MSEobj@F_FMSY)[,,projPeriod] > 1 & as.karray(MSEobj@SSB_SSBMSY)[,,projPeriod] < 1, 1:2, sum) / (pp), 3)
+    RK            <-round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] > 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] < 1, 1:2, sum) / (pp), 3)
 
     # 8 Pr(SB > 0.2SB0)
-    PrSBgt0.2SB0   <- round(apply(as.karray(MSEobj@SSB_SSB0)[,,MSEobj@targpop,projPeriod]>0.2, MARGIN=c(1:2), mean), digits=2)
+    PrSBgt0.2SB0  <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod]>0.2, MARGIN=c(1:2), mean), digits=2)
 
     # 9 Pr(SB > SBlim) where SBlim = 0.4SSBMSY
-    PrSBgtSBlim    <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[,,projPeriod]>MSEobj@SBlim, MARGIN=c(1:2), mean), digits=2)
+    PrSBgtSBlim   <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod]>MSEobj@SBlim, MARGIN=c(1:2), mean), digits=2)
 
     #10 mean Catch
-    Y <-round(apply(as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriod], MARGIN=c(1:2), mean), 0)/1000
+    Y             <-round(apply(as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod], MARGIN=c(1:2), mean), 0)/1000
 
     #11 mean Catch by fishery/area
     #see summaryByAF() for region and gear breakdown
 
     #12
-    YoMSY      <- round(apply(as.karray(MSEobj@C_MSY)[,,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    YoMSY         <- round(apply(as.karray(MSEobj@C_MSY)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #13 mean catch rates relative to catch rates over last data year; see summaryByAF for region and gear breakdown
-    relCPUE      <- round(apply(as.karray(MSEobj@IobsArchive)[,,projPeriod],   MARGIN=c(1:2), mean)/
-                         (as.karray(MSEobj@IobsArchive)[,,MSEobj@nyears]), digits=2)
+    relCPUE       <- round(apply(as.karray(MSEobj@IobsArchive)[keep(MPs),keep(Sims),projPeriod],   MARGIN=c(1:2), mean)/
+                           (as.karray(MSEobj@IobsArchive)[keep(MPs),keep(Sims),MSEobj@nyears]), digits=2)
 
     #14 mean absolute proportional change in catch
     #Average proportional change in Yield between consecutve years: abs(1-Ct/C(t-1))
-    APCY <- apply(abs(1-(as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriod] / as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriodm1])) , 1:2, mean)
+    APCY          <- apply(abs(1-(as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod] / as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriodm1])) , 1:2, mean)
 
     #15 Var(catch) ...changed to CV%
-    YcvPct <-round(apply(as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriod], MARGIN=c(1:2), sd), 2)/Y
+    YcvPct        <-round(apply(as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod], MARGIN=c(1:2), sd), 2)/Y
 
     #16 Pr(fishery collapse) = Pr(years) C<0.1MSY
-    PrYlt0.1MSY      <- round(apply(as.karray(MSEobj@C_MSY)[,,,projPeriod]<0.1, MARGIN=c(1:2), mean), digits=2)
+    PrYlt0.1MSY   <- round(apply(as.karray(MSEobj@C_MSY)[keep(MPs),keep(Sims),,projPeriod]<0.1, MARGIN=c(1:2), mean), digits=2)
 
     # others not listed in MWP list
-    BoBMSY     <- round(apply(as.karray(MSEobj@B_BMSY)[,,projPeriod], MARGIN=c(1:2), mean), digits=2)
-    BoB0       <- round(apply(as.karray(MSEobj@B_B0)[,,,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    BoBMSY        <- round(apply(as.karray(MSEobj@B_BMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
+    BoB0          <- round(apply(as.karray(MSEobj@B_B0)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #Average Absolute value change in Yield
-    AAVY <- apply(((as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriod] - as.karray(MSEobj@CM)[,,MSEobj@targpop,projPeriodm1]) ^ 2) ^ 0.5, 1:2, mean)
+    AAVY          <- apply(((as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod] - as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriodm1]) ^ 2) ^ 0.5, 1:2, mean)
 
-    temp <- data.frame(cbind(apply(SBoSB0, MARGIN=1,mean),t(apply(SBoSB0, MARGIN=1,quantile, probs=percentiles)),
-                             apply(minSBoSB0, MARGIN=1,mean),t(apply(minSBoSB0, MARGIN=1,quantile, probs=percentiles)),
-                             apply(SBoSBMSY, MARGIN=1,mean),t(apply(SBoSBMSY, MARGIN=1,quantile, probs=percentiles)),
-                             apply(FoFMSY, MARGIN=1,mean),    t(apply(FoFMSY, MARGIN=1,quantile, probs=percentiles)),
-                             apply(FoFtarg, MARGIN=1,mean),   t(apply(FoFtarg, MARGIN=1,quantile, probs=percentiles)),
-                             apply(GK,MARGIN=1,mean),         t(apply(GK,MARGIN=1,quantile, probs=percentiles)),
-                             apply(RK,MARGIN=1,mean),         t(apply(RK,MARGIN=1,quantile, probs=percentiles)),
-                             apply(PrSBgt0.2SB0,MARGIN=1,mean),         t(apply(PrSBgt0.2SB0,MARGIN=1,quantile, probs=percentiles)),
-                             apply(PrSBgtSBlim,MARGIN=1,mean),         t(apply(PrSBgtSBlim,MARGIN=1,quantile, probs=percentiles)),
-                             apply(Y, MARGIN=1,mean),         t(apply(Y, MARGIN=1,quantile, probs=percentiles)),
-                             apply(relCPUE, MARGIN=1,mean),      t(apply(relCPUE, MARGIN=1,quantile, probs=percentiles)),
-                             apply(YoMSY, MARGIN=1,mean),     t(apply(YoMSY, MARGIN=1,quantile, probs=percentiles)),
-                             apply(APCY,MARGIN=1,mean),       t(apply(APCY,MARGIN=1,quantile, probs=percentiles)),
+    temp <- data.frame(cbind(apply(SBoSB0, MARGIN=1,mean),      t(apply(SBoSB0, MARGIN=1,quantile, probs=percentiles)),
+                             apply(minSBoSB0, MARGIN=1,mean),   t(apply(minSBoSB0, MARGIN=1,quantile, probs=percentiles)),
+                             apply(SBoSBMSY, MARGIN=1,mean),    t(apply(SBoSBMSY, MARGIN=1,quantile, probs=percentiles)),
+                             apply(FoFMSY, MARGIN=1,mean),      t(apply(FoFMSY, MARGIN=1,quantile, probs=percentiles)),
+                             apply(FoFtarg, MARGIN=1,mean),     t(apply(FoFtarg, MARGIN=1,quantile, probs=percentiles)),
+                             apply(GK,MARGIN=1,mean),           t(apply(GK,MARGIN=1,quantile, probs=percentiles)),
+                             apply(RK,MARGIN=1,mean),           t(apply(RK,MARGIN=1,quantile, probs=percentiles)),
+                             apply(PrSBgt0.2SB0,MARGIN=1,mean), t(apply(PrSBgt0.2SB0,MARGIN=1,quantile, probs=percentiles)),
+                             apply(PrSBgtSBlim,MARGIN=1,mean),  t(apply(PrSBgtSBlim,MARGIN=1,quantile, probs=percentiles)),
+                             apply(Y, MARGIN=1,mean),           t(apply(Y, MARGIN=1,quantile, probs=percentiles)),
+                             apply(relCPUE, MARGIN=1,mean),     t(apply(relCPUE, MARGIN=1,quantile, probs=percentiles)),
+                             apply(YoMSY, MARGIN=1,mean),       t(apply(YoMSY, MARGIN=1,quantile, probs=percentiles)),
+                             apply(APCY,MARGIN=1,mean),         t(apply(APCY,MARGIN=1,quantile, probs=percentiles)),
                              apply(YcvPct,MARGIN=1,mean),       t(apply(YcvPct,MARGIN=1,quantile, probs=percentiles,na.rm=T)),
-                             apply(PrYlt0.1MSY,MARGIN=1,mean),       t(apply(PrYlt0.1MSY,MARGIN=1,quantile, probs=percentiles))))
+                             apply(PrYlt0.1MSY,MARGIN=1,mean),  t(apply(PrYlt0.1MSY,MARGIN=1,quantile, probs=percentiles))))
 
-    rownames(temp) <- paste(MSEobj@MPs,"y",pp,sep="")
+    rownames(temp) <- paste(MSEobj@MPs[MPs],"y",pp,sep="")
 
     stats <- rbind(data.frame(stats), temp)
   } #pp

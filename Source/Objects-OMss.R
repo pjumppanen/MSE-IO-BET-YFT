@@ -88,7 +88,13 @@ setClass("OMd",representation(
                Recbcv           = "numeric",   # Bias in observation of recent recrutiment
                IMSYbcv          = "numeric",   # Bias in observation of target CPUE (CPUE @ MSY)
                MSYbcv           = "numeric",   # Bias in observation of target catch (MSY)
-               BMSYbcv          = "numeric"    # Bias in observation of target biomass (BMSY)
+               BMSYbcv          = "numeric",   # Bias in observation of target biomass (BMSY)
+
+               # management procedure tuning
+               tunePMProjPeriod = "numeric",
+               tunePM           = "character", # name of performance measure to tune to
+               tunePMTarget     = "numeric",   # level of performance measure that tuning should achieve
+               tuneTol          = "numeric"    # relative level of precision required in tuning
 ))
 
 
@@ -298,7 +304,13 @@ setClass("OMss",representation(
                Recbcv         = "numeric", # Bias in observation of recent recrutiment
                IMSYbcv        = "numeric", # Bias in observation of target CPUE (CPUE @ MSY)
                MSYbcv         = "numeric", # Bias in observation of target catch (MSY)
-               BMSYbcv        = "numeric"  # Bias in observation of target biomass (BMSY)
+               BMSYbcv        = "numeric", # Bias in observation of target biomass (BMSY)
+
+               # management procedure tuning
+               tunePMProjPeriod = "numeric",
+               tunePM           = "character", # name of performance measure to tune to
+               tunePMTarget     = "numeric",   # level of performance measure that tuning should achieve
+               tuneTol          = "numeric"    # relative level of precision required in tuning
               ))
 
 setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
@@ -374,6 +386,11 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
   .Object@nCAAobs        <- OMd@nCAAobs
   .Object@ageMbcv        <- OMd@ageMbcv
   .Object@indexFisheries <- OMd@indexFisheries
+
+  .Object@tunePMProjPeriod  <- OMd@tunePMProjPeriod
+  .Object@tunePM            <- OMd@tunePM
+  .Object@tunePMTarget      <- OMd@tunePMTarget
+  .Object@tuneTol           <- OMd@tuneTol
 
   set.seed(.Object@seed)
 
@@ -1162,6 +1179,12 @@ setClass("MSE",representation(
                nMPs             = "integer", # number of management procedures
                targpop          = "integer",
 
+               # tuning vector for MP tuning
+               tune             = "numeric",
+
+               # projection period for tuning diagnostic
+               tunePMProjPeriod = "numeric",
+
                # Observation model
                Cimp             = "numeric",
                Cb               = "numeric",
@@ -1245,6 +1268,869 @@ setClass("MSE",representation(
 
 
 
+runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, interval, Report, CppMethod, UseCluster, EffortCeiling, TACTime, rULim, tune)
+{
+  nsim      <- length(projSims)
+  npop      <- OM@npop
+  nyears    <- OM@nyears
+  proyears  <- OM@proyears
+  nages     <- OM@nages
+  nsubyears <- OM@nsubyears
+  nareas    <- OM@nareas
+  nfleets   <- OM@nfleets
+  nCPUE     <- OM@nCPUE
+  targpop   <- as.integer(OM@targpop)
+  allyears  <- nyears + proyears
+  nMPs      <- length(MPs)
+
+  NMass     <- karray(as.double(NA),c(nsim,npop,nages,allyears+1,nsubyears,nareas))  # N in mass
+  Z         <- karray(as.double(NA),c(nsim,npop,nages,allyears+1,nsubyears,nareas))  # Z aggregated over fleets
+  SSBA      <- karray(as.double(NA),c(nsim,npop,allyears))                           # SSB aggregated over ages archive
+  NLLI      <- karray(as.double(NA),c(nsim,allyears))                                # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
+  NLL       <- karray(as.double(NA),c(nsim,allyears,nsubyears,nareas))               # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
+  Fdist     <- karray(as.double(NA),c(nsim,npop,nfleets,nareas))                     # current F dist by fleet
+  CAAF      <- karray(as.double(NA),c(nsim,nages,allyears,nfleets))                  # Catch at age by fleets
+  B         <- karray(as.double(NA),c(nsim,npop,allyears))                           # Biomass annual aggregate series
+  Rec       <- karray(as.double(NA),c(nsim,npop,allyears))                           # Recruitment series
+  RecYrQtr  <- karray(as.double(NA),c(nsim,npop,allyears * nsubyears))               # Quaterly series
+
+  initYear <- nyears  # last assessment year
+
+  # subset all model parameters needed by the model run
+  Len_age       <- OM@Len_age[keep(projSims),,,]
+  Len_age_mid   <- OM@Len_age_mid[keep(projSims),,,]
+  Wt_age        <- OM@Wt_age[keep(projSims),,,]
+  #Wt_age_SB     <- OM@Wt_age_SB[keep(projSims),,,]
+  Wt_age_mid    <- OM@Wt_age_mid[keep(projSims),,,]
+  h             <- OM@h[keep(projSims),]
+  R0            <- OM@R0[keep(projSims),]
+  Idist         <- OM@Idist[keep(projSims),,,]
+  M             <- OM@M[keep(projSims),,,]
+  mat           <- OM@mat[keep(projSims),,,]
+  Recdevs       <- OM@Recdevs[keep(projSims),,]
+  Recdist       <- OM@Recdist[keep(projSims),,]
+#    Linf          <- OM@Linf[keep(projSims)]
+#    K             <- OM@K[keep(projSims)]
+  q             <- OM@q[keep(projSims),]
+  EByQtrLastYr  <- OM@EByQtrLastYr[keep(projSims),,,]
+  ECurrent      <- OM@ECurrent[keep(projSims),,,]
+  CMCurrent     <- OM@CMCurrent[keep(projSims),,,]
+  sel           <- OM@sel[keep(projSims),,]
+  mov           <- OM@mov[keep(projSims),,,,,]
+  CPUEsel       <- OM@CPUEsel[keep(projSims),,]
+  CPUEobsY      <- OM@CPUEobsY[keep(projSims),]
+  TACEError     <- TACEErrorAll[keep(projSims),]
+
+  CAAF[,,1:initYear,]                 <- OM@CAAFss[keep(projSims),,1:initYear,]
+  SSBA[,,1:initYear]                  <- OM@SSBAss[keep(projSims),,1:initYear]
+  B[,,1:initYear]                     <- OM@Bss[keep(projSims),,1:initYear]
+  Rec[,,1:initYear]                   <- OM@Recss[keep(projSims),,1:initYear]
+  RecYrQtr[,,1:(initYear*nsubyears)]  <- OM@RecYrQtrss[keep(projSims),,1:(initYear*nsubyears)]
+  NLLI[,1:initYear]                   <- OM@NLLIss[keep(projSims),1:initYear]
+  NLL[,1:initYear,,]                  <- OM@NLLss[keep(projSims),1:initYear,,]
+
+  # q to keep CPUE on original scale; should move to OM initialization
+  qCPUE <- rep(NA, nsim)
+
+  for(isim in 1:nsim)
+  {
+    qCPUE[isim] <- sum(CPUEobsY[isim,1:nyears][!is.na(CPUEobsY[isim,1:nyears])]) /
+                   sum(NLLI[isim,1:nyears][!is.na(CPUEobsY[isim,1:nyears])])
+  }
+
+  SSB0 <- karray(OM@SSB0[keep(projSims)],dim=c(nsim,npop))
+
+  # Calculate spawning stock biomass per recruit
+  SSBpR   <- SSB0 / R0
+
+  # Ricker SR params
+  bR      <- log(5.0 * h) / (0.8 * SSB0)
+  aR      <- exp(bR * SSB0) / SSBpR
+
+  # historical simulation of one year to re-create N for first projection year
+  # ---------------------------------------------------------------------------
+  cat("Re-running final year of OM")
+  cat("\n")
+
+  y           <- initYear
+  mm          <- nsubyears
+  nSpawnPerYr <- length(OM@Recsubyr)  # rec Index for more than 1 rec per year
+
+  NullRecSpatialDevs <- karray(as.double(1.0),c(nsim,npop,nareas))
+  N_Y                <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
+  NBefore_Y          <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
+  SSN_Y              <- karray(as.double(NA),c(nsim,npop,nages,nsubyears,nareas))
+  NLL_Y              <- karray(as.double(NA),c(nsim,nsubyears,OM@nCPUE))
+  NLLI_Y             <- karray(as.double(NA),c(nsim))
+  C_Y                <- karray(as.double(NA),c(nsim,npop,nages,nsubyears,nareas,nfleets))
+  SSBA_Y             <- karray(as.double(NA),c(nsim,npop))
+  M_Y                <- M[,,,y]
+  mat_Y              <- mat[,,,y]
+  Len_age_Y          <- Len_age[,,,y]
+  Len_age_mid_Y      <- Len_age_mid[,,,y]
+  Wt_age_Y           <- Wt_age[,,,y]
+  #Wt_age_SB_Y        <- Wt_age_SB[,,,y]
+  Wt_age_mid_Y       <- Wt_age_mid[,,,y]
+  RecdevInd_Y        <- (y - 1) * nSpawnPerYr + 1
+  Recdevs_Y          <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
+  #All this stuff used to calculate Frep (summed over regions, mean over age and season)
+  NsoRbySPAMInit     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
+
+  # Initialise starting population
+  N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
+  NBefore_Y[,,,1,] <- OM@NBeforeInit[keep(projSims),,,]
+
+  # Matrix index arrays used in historic and projection R code
+  SPAYMRF <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas, 1:nfleets))
+  SPAMRF  <- SPAYMRF[,c(1,2,3,5,6,7)]
+  SMRF    <- SPAYMRF[,c(1,5,6,7)]
+  SPARF   <- SPAYMRF[,c(1,2,3,6,7)]
+  SFA     <- SPAYMRF[,c(1,7,3)]
+  SF      <- SPAYMRF[,c(1,7)]
+  SARF    <- SPAYMRF[,c(1,3,6,7)]
+  SAR     <- SPAYMRF[,c(1,3,6)]
+  SRF     <- SPAYMRF[,c(1,6,7)]
+
+  SPAYMR  <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas))
+  SPAMR   <- SPAYMR[,c(1,2,3,5,6)]
+  SPAY    <- SPAYMR[,c(1,2,3,4)]
+  SPAR    <- SPAYMR[,c(1,2,3,6)]
+  SA      <- SPAYMR[,c(1,3)]
+
+  if (.Object@CppMethod != 0) # use C++ Baranov sub-routine
+  {
+    Obj <- Om.create(nsim,
+                     npop,
+                     nages,
+                     nsubyears,
+                     nareas,
+                     nfleets,
+                     OM@Recsubyr)
+
+    OmB.nt.initialiseParameters(Obj,
+                                M_Y,
+                                R0,
+                                mat_Y,
+                                Idist,
+                                Wt_age_Y,
+                                h)
+
+    OmB.nt.runHistoric(Obj,
+                       as.double(1.0),
+                       q,
+                       EByQtrLastYr,
+                       R0,
+                       M_Y,
+                       mat_Y,
+                       Idist,
+                       Len_age_Y,
+                       Wt_age_Y,
+                       sel,
+                       mov,
+                       h,
+                       Recdist,
+                       Recdevs_Y,
+                       NullRecSpatialDevs,
+                       OM@SRrel,
+                       N_Y,
+                       NBefore_Y,
+                       SSN_Y,
+                       C_Y,
+                       SSBA_Y)
+  }
+  else # Use R-based projection code
+  {
+    FM <- karray(NA, dim=c(nsim,npop,nages,nareas,nfleets))
+    Z  <- karray(NA, dim=c(nsim,npop,nages,nareas))
+
+    for (mm in 1:nsubyears)
+    {
+      SPAMRF[,4] <- mm
+      SPAMR[,4]  <- mm
+      SMRF[,2]   <- mm
+
+      SSN_Y[,,,mm,] <- NBefore_Y[,,,mm,] * karray(rep(mat[,,,y],times=nareas), c(nsim,npop,nages,nareas))
+      #potential change to _SB
+      SSBA_Y        <- apply(SSN_Y[,,,mm,] * karray(Wt_age[,,,y], dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
+      #SSBA_Y        <- apply(NBefore_Y[,,,mm,] * karray(Wt_age_SB[,,,y], dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
+
+      if (mm %in% OM@Recsubyr)
+      {
+        for(pp in 1:npop)
+        {
+          # ie every qtr for YFT
+          RecdevInd <- (y - 1) * nSpawnPerYr + mm
+
+          # recruit fish
+          if (OM@SRrel[pp] == 1)
+          {
+            # Beverton-Holt recruitment
+            rec <- Recdevs[,pp,RecdevInd] * ((0.8 * R0[,pp] * h[,pp] * SSBA_Y[,pp]) / (0.2 * SSBpR[,pp] * R0[,pp] * (1 - h[,pp]) + (h[,pp] - 0.2) * SSBA_Y[,pp]))
+          }
+          else
+          {
+            # Most transparent form of the Ricker uses alpha and beta params
+            rec <- Recdevs[,pp,RecdevInd] * aR[,pp] * SSBA_Y[,pp] * exp(-bR[,pp] * SSBA_Y[,pp])
+          }
+
+          NBefore_Y[,pp,1,mm,] <- rec * Recdist[,pp,]
+        }
+      }
+
+      # move fish
+      if (nareas > 1)
+      {
+        N_Y[,,,mm,] <- projection.domov(Ntemp=karray(NBefore_Y[,,,mm,], dim=c(nsim,npop,nages,nareas)),
+                                        movtemp=karray(mov[,,,mm,,], dim=c(nsim,npop,nages,nareas,nareas)))
+      }
+      else
+      {
+        N_Y[,,,mm,] <- NBefore_Y[,,,mm,]
+      }
+
+      # Apply M and F
+      FM[SPARF] <- EByQtrLastYr[SMRF] * sel[SFA] * q[SF]
+      Ftot      <- apply(FM, c(1,2,3,4), sum)
+      Z[SPAR]   <- Ftot[SPAR] + M[SPAY] / nsubyears
+
+      C_Y[SPAMRF] <- N_Y[SPAMR] * (1.0 - exp(-Z[SPAR])) * (FM[SPARF] / Z[SPAR])
+
+      N_Y[,,,mm,] <- N_Y[,,,mm,] * exp(-Z[,,,])
+
+      # Age fish
+      NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
+      NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
+      NBefore_Y[,,1,mm + 1,]              <- 0
+      N_Y[,,,mm + 1,]                     <- NBefore_Y[,,,mm + 1,]
+    }
+  }
+
+  # calculate LL selected numbers for the year for the abundance index
+  NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
+
+  for (isubyears in 1:nsubyears)
+  {
+    for (iCPUE in 1:OM@nCPUE)
+    {
+      NLL_Y[1:nsim,isubyears,iCPUE] <- apply(NLLbySAMR[,,isubyears,OM@CPUEFleetAreas[iCPUE]] * CPUEsel[,,iCPUE], FUN=sum, MARGIN=1, na.rm=T)
+    }
+  }
+
+  NLLI_Y <- apply(NLL_Y, FUN=sum, MARGIN=1, na.rm=T)
+
+  # copy results back into historic data
+  SSBA[,,y] <- SSBA_Y
+  NLLI[,y]  <- NLLI_Y
+  NLL[,y,,] <- NLL_Y
+
+  E <- apply(ECurrent, sum, MARGIN=c(1,2,4))
+
+  #first N needs to be re-initialized for each MP
+  NInit_Y <- N_Y[,,,nsubyears + 1,]
+
+  # Store results ...
+  .Object@CM[1:nMPs,projSims,,y]     <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum),each=nMPs)
+  .Object@CMbyF[1:nMPs,projSims,,y,] <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2,6), sum),each=nMPs)
+
+  CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
+  #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
+  BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
+  B[,,y]      <- apply(BbyS, c(1,2), mean)
+  Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
+
+  FirstIdx <- (y - 1) * nsubyears + 1
+  LastIdx  <- y * nsubyears
+
+  RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
+
+  # Save data for Frep calculation
+  NsoRbySPAMInit[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
+
+  # Run projections
+  # ---------------------------------------------------------------------------
+
+  cat("\n Running projections \n")
+
+  firstMPy <- nyears + .Object@firstMPYr - .Object@lastCalendarYr
+  upyrs    <- firstMPy + (0:(floor(OM@proyears / interval))) * interval  # the years in which there are MP updates (e.g. every three years)
+
+  #xxx zzz need to load historical Catch and CL (depending on MP), bypassed for now
+
+  CAAInit     <- karray(NA, dim=c(nsim, nages, nyears))
+  CAAIndInit  <- karray(NA, dim=c(nsim, nages, nyears)) #Catch-at-age for the abudnance index fleets
+
+  if (min(apply(CAAF, c(1,2,3), sum) < 0, na.rm=T))
+  {
+    print("CA<0 a")
+    browser()
+  }
+
+  CAAInit[,,1:nyears]    <- sampCatch(apply(CAAF[,,keep(1:nyears),], c(1,2,3),sum), .Object@nCAAobs)                    # need time series for MP
+  CAAIndInit[,,1:nyears] <- sampCatch(apply(CAAF[,,keep(1:nyears),OM@indexFisheries], c(1,2,3), sum), .Object@nCAAobs) # need time series for MP
+
+  # xxx zzz need to load historical from OM eventually
+  nCALbins <- 30
+
+  #DK: quick and dirty fix
+  #CAL_bins   <- seq(0, max(Linf), length.out=nCALbins)
+  CAL_bins   <- seq(0, 200, length.out=nCALbins - 1)
+  CAL_bins   <- c(CAL_bins, CAL_bins[nCALbins - 1] * 2)     #add big +bin
+  CALInit    <- karray(NA, dim=c(nsim, nCALbins, nyears))
+  CALIndInit <- karray(NA, dim=c(nsim, nCALbins, nyears))
+
+  #DK change to use Len_age rather than recalc
+  #CAL                     <- makeCAL(CAA, Linf=Linf[,1,1:nyears], K=K[,1,1:nyears], t0=t0[1], CAL_bins)
+  #CAL[,,1:nyears]         <- makeCAL(CAA[,,1:nyears,drop=F], Len_age[1,1,,1:nyears], CAL_bins)
+  CALInit[,,1:nyears]     <- makeCAL(CAAInit[,,1:nyears], Len_age_mid[1,1,,1:nyears], CAL_bins)
+  #CALLL10[,,1:nyears]     <- makeCAL(CAALL10[,,1:nyears,drop=F], Len_age[1,1,,1:nyears], CAL_bins)
+  CALIndInit[,,1:nyears]  <- makeCAL(CAAIndInit[,,1:nyears], Len_age_mid[1,1,,1:nyears], CAL_bins)
+
+  for (MP in 1:nMPs)
+  {
+    #MP loop
+    #Need to re-initialize some arrays
+    if (.Object@CppMethod != 0)
+    {
+      N_Y[,,,nsubyears + 1,]        <- NInit_Y
+      NBefore_Y[,,,nsubyears + 1,]  <- NInit_Y
+    }
+    else
+    {
+      N_Y[,,,1,]        <- NInit_Y
+      NBefore_Y[,,,1,]  <- NInit_Y
+    }
+
+    NsoRbySPAM <- NsoRbySPAMInit
+
+    .Object@CM[MP,keep(projSims),,]     <- OM@CBss[keep(projSims),,]
+    .Object@F_FMSY[MP,keep(projSims),] <- OM@Frepss[keep(projSims),] / OM@FMSY1[keep(projSims)]
+
+    CAA     <- CAAInit
+    CAAInd  <- CAAIndInit
+    CAL     <- CALInit
+    CALInd  <- CALIndInit
+
+    set.seed(OM@seed) #repeat the same stochastic history for each MP to keep the comparison fair
+
+    cat(paste(MP,"/",nMPs," Running MSE for ",MPs[MP],"    lastSim ", projSims[length(projSims)], sep=""))  # print a progress report
+    cat("\n")
+    flush.console()                                             # update the console
+
+    # initial TAC and TAE values required for first MP application
+    TAC   <- karray(apply(CMCurrent, sum, MARGIN=c(1)))      # refresh the MP store of TAC among simulations
+    TAE   <- karray(rep(0, nfleets * nsim), dim=c(nsim, nfleets))
+    TACE  <- cbind(TAE, TAC)
+
+    if (.Object@CppMethod != 0)
+    {
+      Om.nt.beginProjection(Obj, as.double(rep(log(0.001), nfleets)))
+    }
+
+    for (y in (nyears + 1):(nyears + proyears))
+    {
+      SPAYMRF[,4] <- y
+      SPAY[,4]    <- y
+
+      #projection years loop includes repeat of first year for rec and initializtion
+      if (.Object@CppMethod == 0)
+      {
+        cat(".")
+      }
+
+      selTS <- sel
+
+      if (OM@selAgeRange >= 1)
+      {
+        #add an age shift to the selectivity noise
+        selAge <- karray(rep(round(OM@selTSSign[keep(1:nsim),,2] * sin((y - nyears - 1) * OM@selTSWaveLen[keep(1:nsim),,2]) * OM@selAgeRange), nages), dim=dim(sel)[1:2])
+
+        for (si in 1:nsim)
+        {
+          for (fi in 1:nfleets)
+          {
+            if (selAge[si,fi] > 0)
+            {
+              selTS[si,fi,(selAge[si,fi] + 1):nages]  <- sel[si,fi,1:(nages - selAge[si,fi])]
+              selTS[si,fi,1:selAge[si,fi]]            <- sel[si,fi,1]
+            }
+            else
+            {
+              if (selAge[si,fi] < 0)
+              {
+                selTS[si,fi,1:(nages + selAge[si,fi])]          <- sel[si,fi,(1 - selAge[si,fi]):nages]
+                selTS[si,fi,(nages + selAge[si,fi] + 1):nages]  <- sel[si,fi,nages]
+              }
+            }
+          }
+        }
+      }
+
+      selExp    <- exp(OM@selTSSign[keep(1:nsim),,1] * sin((y-nyears-1) * OM@selTSWaveLen[keep(1:nsim),,1]) * (OM@selExpRange))
+      selTS     <- selTS[keep(1:nsim),,] ^ rep(selExp[keep(1:nsim),],nages)
+      CPUEselTS <- CPUEsel
+
+      for (ai in 1:nareas)
+      {
+        CPUEselTS[1:nsim,,ai] <- selTS[keep(1:nsim),OM@indexFisheries[ai],]
+      }
+
+      #demo plot of selectivity temporal variability
+      # browser()
+      # fii <- 2 # 2= LL region 1, 5=PSLS region 1
+      # plot(sel[1,fii,], type='l', main='LL R1; y = ' %&% (y-61), ylab='Age', xlab='Sel',lwd=1)
+      # #plot(sel[1,fii,], type='l', main='PSLS R1; y = ' %&% (y-61), ylab='Age', xlab='Sel')
+      # lines(selTS[1,fii,], col=fii, lty=2)
+
+      if ((y %in% c(nyears + proyears)) && (MP == 1))
+      {
+        #plot some original and  modified selectivities
+        par(mfrow=c(4,4))
+
+        if(Report){
+          for (fi in 1:nfleets)
+          {
+            plot(sel[1,fi,], type='l', main='sel')
+            lines(selTS[1,fi,], col=2)
+          }
+
+          for (ai in 1:min(16,nCPUE))
+          {
+            plot(CPUEsel[1,,ai], type='l', main="CPUE sel")
+            lines(CPUEselTS[1,,ai], col=3)
+          }
+        }
+      }
+
+      # set the bridging Catches between the last OM year and the first MP year
+      firstMPy <- nyears + .Object@firstMPYr - .Object@lastCalendarYr
+
+      if (y < firstMPy)
+      {
+        yBridge <- y - nyears
+
+        if ((yBridge <= length(.Object@catchBridge)) && (sum(.Object@catchBridge) > 0))
+        {
+          # use the known aggregate catch imported from the OMd
+          TAC   <- .Object@catchBridge[yBridge]
+        }
+        else
+        {
+          #use the previous aggregate catch+error
+          TAC   <- TAC * exp(rnorm(length(TAC)) * .Object@catchBridgeCV - 0.5 * .Object@catchBridgeCV ^ 2)
+        }
+
+        TAE   <- karray(rep(0, nfleets * nsim), dim=c(nsim, nfleets))
+        TACE  <- cbind(TAE, TAC)
+      }
+
+      if (y %in% upyrs)
+      {
+        #CPUEobsY based on merger of observed and simulated CPUE (proportional to IObs in projections)
+        #calculate CPUE up to but not including the current year (MP does not necessarily have access to this value depending on data lag)
+        CPUEobsY[,nyears:(y - 1)] <- qCPUE * (NLLI[,nyears:(y - 1)] ^ .Object@Ibeta[keep(projSims)]) * .Object@Ierr[keep(projSims),nyears:(y - 1)]
+        Iobs                      <- CPUEobsY[,1:(y - 1)]
+
+        # Operate MP S P A Y M R          #MP applied in these years only
+
+        # Simulate imperfect information --------------------------------------
+
+        if (y >=firstMPy) #DK change ... xxx why +1 ?
+        {
+          # DK change in relation to redefined upyrs
+          #update data
+          if (y == firstMPy)
+          {
+            nuy <- (nyears + 1):(firstMPy - 1)
+          }
+          else
+          {
+            nuy <- (upyrs[match(y, upyrs) - 1]):(y - 1)
+          }
+
+          nCAA    <- sampCatch(apply(CAAF[,,keep(nuy),], c(1,2,3), sum), .Object@nCAAobs)
+
+          set.seed(OM@seed + y * nsim)
+
+          nCAAInd <- sampCatch(apply(CAAF[,,keep(nuy),OM@indexFisheries], c(1,2,3), sum), .Object@nCAAobs)
+
+          set.seed(OM@seed + y * nsim + 1)
+
+          CAA     <- abind(CAA, nCAA, along=3)
+          CAAInd  <- abind(CAAInd, nCAAInd, along=3)
+          #CAL     <- abind(CAL, makeCAL(nCAA, Linf=OM@Linf[,1,nuy], K=K[,1,nuy], t0=t0[1], CAL_bins), along=3)
+          CAL     <- abind(CAL, makeCAL(nCAA, Len_age_mid[1,1,,nuy], CAL_bins), along=3)
+          CALInd  <- abind(CALInd, makeCAL(nCAAInd, Len_age_mid[1,1,,nuy], CAL_bins), along=3)
+        }
+
+        Cobs <- apply(.Object@CM[MP,keep(projSims),,1:(y - 1)], c(1,3), sum) * .Object@Cerr[keep(projSims),1:(y - 1)]
+
+        # xxx zzz MP rate parameters presumably need to be harmonized for YFT as well
+        # xxx zzz need to finish growth curve substitution flagged ###
+        # missing dimension problem temporarily commented out...
+
+        pset<-list("Cobs"     = Cobs[,1:(y - OM@MPDataLag)],
+                   #"K"        = K[,1,y - 1]*.Object@Kb[keep(projSims)],
+                   #"Linf"     = Linf[,1,y - 1]*.Object@Kb[keep(projSims)],
+                   "t0"       = rep(OM@t0[1],nsim),
+                   "M"        = M[,1,,(y - 1)]*.Object@Mb[keep(projSims)],
+                   "MSY"      = OM@MSY[keep(projSims)] * .Object@MSYb[keep(projSims)],
+                   "BMSY"     = OM@BMSY[keep(projSims)] * .Object@BMSYb[keep(projSims)],
+                   "UMSY"     = OM@UMSY[keep(projSims)] * .Object@FMSYb[keep(projSims)],
+                   "a"        = rep(OM@a, nsim),
+                   "b"        = rep(OM@b, nsim),
+                   "nages"    = nages,
+                   "Mat"      = mat[,1,,1:(y - 1)],
+
+                   #need to lag data available for HCR by appropriate amount (OM@MPDataLag)
+                   "CMCsum"   = apply(CMCurrent, sum, MARGIN=1),
+                   "UMSY_PI"  = OM@UMSY[keep(projSims)],
+                   "Iobs"     = Iobs[,keep(1:(y - OM@MPDataLag))],
+                   "CAA"      = CAA[,,keep(1:(y - OM@MPDataLag))],
+                   "CAL"      = CAL[,,keep(1:(y - OM@MPDataLag))],
+                   "CALInd"   = CALInd[,,keep(1:(y - OM@MPDataLag))],
+                   "CAL_bins" = CAL_bins,
+                   "prevTACE" = TACE,
+                   "y"        = y - OM@MPDataLag,
+                   "tune"     = tune[MP])
+
+        simset <- karray(1:nsim, c(nsim))
+
+        if (.Object@UseCluster != 0)
+        {
+          TACE <- t(parSapply(cluster, simset, FUN=runMP, get(MPs[MP]), pset))
+          printClusterOutput(simset)
+        }
+        else
+        {
+          TACE <- t(sapply(simset, FUN=get(MPs[MP]), pset))
+        }
+      }
+
+      # Unpack MP TACs and TAEs
+      TAC    <- TACE[,ncol(TACE)]  # TAC is final entry
+      TAEbyF <- karray(TACE[,1:(ncol(TACE) - 1)], dim=c(nsim,nfleets))
+      #if the fleet has a TAE, this vector is used to exclude the fleet from the TAC extractions
+
+      # Start of annual projection
+      #---------------------------------------------------------------------
+      #Spatial devs in rec (affect spatial distribution but not total; streamlined implementationsame for all sims, pops, area)
+      recSpatialDevs <- karray(exp(OM@ReccvR[keep(projSims)] * rnorm(length(OM@Recdist[keep(projSims),,]))), dim=dim(OM@Recdist[keep(projSims),,]))
+      recSpatialDevs <- recSpatialDevs / karray(rep(apply(recSpatialDevs, FUN=mean, MARGIN=c(1,2)), nareas),dim=dim(OM@Recdist[keep(projSims),,]))
+
+      if (.Object@CppMethod != 0)
+      {
+        M_Y           <- M[,,,y]
+        mat_Y         <- mat[,,,y]
+        Len_age_Y     <- Len_age[,,,y]
+        Len_age_mid_Y <- Len_age_mid[,,,y]
+        Wt_age_Y      <- Wt_age[,,,y]
+        #Wt_age_SB_Y   <- Wt_age_SB_Y[,,,y]
+        Wt_age_mid_Y  <- Wt_age_mid[,,,y]
+        RecdevInd_Y   <- (y - 1) * nSpawnPerYr + 1
+        Recdevs_Y     <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
+
+        Om.nt.projection(Obj,
+                         y,
+                         as.integer(if (Report) 1 else 0),
+                         EffortCeiling,
+                         TAC,
+                         TAEbyF,
+                         TACEError,
+                         ECurrent,
+                         CMCurrent,
+                         q,
+                         R0,
+                         M_Y,
+                         mat_Y,
+                         Idist,
+                         Len_age_Y,
+                         Wt_age_Y,
+                         Wt_age_mid_Y,
+                         selTS,
+                         mov,
+                         h,
+                         Recdist,
+                         Recdevs_Y,
+                         recSpatialDevs,
+                         OM@SRrel,
+                         N_Y,
+                         NBefore_Y,
+                         SSN_Y,
+                         C_Y,
+                         SSBA_Y,
+                         as.integer(100));
+      }
+      else
+      {
+        # distribute TAC by season and fleet for all sims, for all fishries that do not have TAEs
+        isTACFleet          <- karray(NA, dim=dim(CMCurrent))
+        SMRFim              <- as.matrix(expand.grid(1:nsim, 1:nsubyears, 1:nareas, 1:nfleets))
+        SFim                <- SMRFim[,c(1,4)]
+        isTACFleet[SMRFim]  <- karray(rep((!TAEbyF[1,]) * 1.0, each=nsim), dim=c(nsim, nfleets))[SFim]  # exclude TAC fleets
+        TACbySMRF           <- TAC * CMCurrent * isTACFleet / apply(CMCurrent * isTACFleet, sum, MARGIN=c(1))
+
+        for (mm in 1:nsubyears)
+        {
+          SPAYMRF[,5]  <- mm
+          SPAMRF[,4]   <- mm
+          SPAMR[,4]    <- mm
+          SMRF[,2]     <- mm
+
+          N_Y[,,,mm,]   <- NBefore_Y[,,,mm,]
+          SSN_Y[,,,mm,] <- NBefore_Y[,,,mm,] * karray(rep(mat[,,,y],times=nareas), c(nsim,npop,nages,nareas))
+          #potential change
+          SSBA_Y        <- apply(SSN_Y[,,,mm,] * karray(rep(Wt_age[,,,y],times=nareas), dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
+          #SSBA_Y        <- apply(NBefore_Y[,,,mm,] * karray(rep(Wt_age_SB[,,,y],times=nareas), dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
+
+          # do recruitment
+          if(mm %in% OM@Recsubyr)
+          {
+            for(pp in 1:npop)
+            {
+              # ie every qtr for YFT
+              RecdevInd <- (y - 1) * nSpawnPerYr + mm
+
+              # recruit fish
+              if (OM@SRrel[pp] == 1)
+              {
+                # Beverton-Holt recruitment
+                rec <- Recdevs[,pp,RecdevInd] * ((0.8 * R0[,pp] * h[,pp] * SSBA_Y[,pp]) / (0.2 * SSBpR[,pp] * R0[,pp] * (1 - h[,pp]) + (h[,pp] - 0.2) * SSBA_Y[,pp]))
+              }
+              else
+              {
+                # Most transparent form of the Ricker uses alpha and beta params
+                rec <- Recdevs[,pp,RecdevInd] * aR[,pp] * SSBA_Y[,pp] * exp(-bR[,pp] * SSBA_Y[,pp])
+              }
+
+              N_Y[,pp,1,mm,]        <- rec * Recdist[,pp,] * recSpatialDevs[,pp,]
+              NBefore_Y[,pp,1,mm,]  <- N_Y[,pp,1,mm,]
+            }
+          }
+
+          # move fish (order of events altered from original)
+          if (nareas > 1)
+          {
+            N_Y[,,,mm,] <- projection.domov(Ntemp=karray(N_Y[,,,mm,], dim=c(nsim,npop,nages,nareas)),
+                                            movtemp=karray(mov[,,,mm,,], dim=c(nsim,npop,nages,nareas,nareas)))
+          }
+
+          #---------------------------------------------------------------------
+          # Use the new population dynamics for mix of TACs and TAEs
+          # Pope's approximation; values up to ~0.6 may be substantially closer
+          # to Baranov depending on TAC, TAE and M
+
+          #TACTime <- 0.5
+
+          CNTACbySPARF <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets))
+          CNTAEbySPARF <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets))
+
+          # Fishing mort for TAE-managed fleets
+          FTAE    <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets)) #by fleet
+          FTAEAgg <- karray(0, dim=c(nsim,npop,nages,nareas))         #aggregated over fleets
+
+          # Define some index matrices
+          SPARFim <- SPAYMRF[,c(1,2,3,6,7)]
+          SFim    <- SPAYMRF[,c(1,7)]
+          SMRFim  <- SPAYMRF[,c(1,5,6,7)]
+
+          # TAE Fs by fleet
+          FTAE[SPARFim] <- ECurrent[SMRFim] * TAEbyF[SFim] * selTS[SFA] * q[SF] * TACEError[SFim]
+
+          #sum TAE Fs over fleets
+          FTAEAgg <- apply(FTAE, MARGIN=c(1:4), sum)
+
+          #---------------------------------------------------------------------
+          # first half timestep natural mort and F for TAEs (before TAC)
+
+          CNTAEbySPARF[SPARFim] <- FTAE[SPARFim] / (FTAEAgg[SPAR] + M[SPAY] / nsubyears) * (1.0 - exp(-TACTime * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))) * N_Y[SPAMR]
+          N_Y[SPAMR]            <- N_Y[SPAMR] * exp(-TACTime * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))
+
+          #---------------------------------------------------------------------
+          # mid-year TAC extraction
+
+          CNTACbySPAR <- karray(0.0, dim=c(nsim,npop,nages,nareas))
+
+          # skip if all TACs = 0
+          if ((sum(isTACFleet) > 0) && (TAC > 0.0))
+          {
+            # xxx still need to add TAC implementation error
+            # xxx some of this is probably incorrect for multi-population case
+
+            # Vulnerable biomass and numbers for each fishery by pop
+            VBbySPARF    <- karray((N_Y[SPAMR] * Wt_age_mid[SPAY] * selTS[SFA]), dim=c(nsim,npop,nages,nareas,nfleets))
+
+            # VB summed over ages (and populations)
+            VBbySRF      <- apply(VBbySPARF,sum,MARGIN=c(1,4,5))
+
+            # U for each fishery and region independently (TAC could be unachievable , i.e. U>1)
+            UbySRFtest                 <- TACbySMRF[,mm,,] / VBbySRF[]
+            UbySRFtest[UbySRFtest > 9] <- 9 #bound ridiculous U to prevent exp(U) -> inf
+
+            # U for each age by region and fishery  (could be unachievable, i.e. U>1)
+            UbySARFtest       <- karray(NA, dim=c(nsim,nages,nareas,nfleets))
+            UbySARF           <- karray(NA, dim=c(nsim,nages,nareas,nfleets))
+            UbySARFtest[SARF] <- UbySRFtest[SRF] * selTS[SFA] * q[SF] * TACEError[SFim]
+
+            # U for each age by region aggregated over fisheries
+            UbySARtest <- apply(UbySARFtest, sum, MARGIN=c(1:3))
+
+            # ad hoc limit on U
+            UbySAR                     <- UbySARtest
+            UbySAR[UbySARtest > rULim] <- rULim+(1-rULim-0.3)*(1-exp(-UbySARtest[UbySARtest > rULim]+rULim))
+
+            # rULim=50% original: proportional to U=0.5, then approaches an asymptote of 0.88;
+            #if(rULim == 0.5) UbySAR[UbySARtest > 0.5] <- exp(UbySARtest[UbySARtest > 0.5]) / (1.0 + exp(UbySARtest[UbySARtest > 0.5])) - 0.122
+            # rULim=30% - seemingly best (coupled with the TACtime=0.01); proportional to U=0.3, then approaches an asymptote of 0.28
+            #if(rULim == 0.3) UbySAR[UbySARtest > 0.3] <- exp(UbySARtest[UbySARtest > 0.3]) / (1.0 + exp(UbySARtest[UbySARtest > 0.3])) - 0.28
+            #test  H65
+            #UbySAR[UbySARtest > 0.65] <- exp(UbySARtest[UbySARtest > 0.65]) / (1.0 + exp(UbySARtest[UbySARtest > 0.65])) - 0.01
+            #test  H10
+            #UbySAR[UbySARtest > 0.1] <- exp(UbySARtest[UbySARtest > 0.1]) / (1.0 + exp(UbySARtest[UbySARtest > 0.1])) - 0.43
+            #test  H99
+            #UbySAR[UbySARtest > 0.99] <- 0.99
+
+            # rescale U for each fishery as a proportion of the fishery-aggregate U (only relevant for those that exceed U limit)
+            UbySARF[SARF] <- UbySAR[SAR] * UbySARFtest[SARF] / UbySARtest[SAR]
+
+            # TAC catch in numbers (U identical for all pops, xxx probably not correct for multiple pops)
+            CNTACbySPARF[SPARFim] <- UbySARF[SARF] * N_Y[SPAMR]
+
+            # aggregate catch over fleets
+            CNTACbySPAR <- karray(apply(CNTACbySPARF, sum, MARGIN=c(1:4)), dim=c(nsim,npop,nages,nareas))
+
+            # Update N post-TAC extraction
+            N_Y[SPAMR] <- N_Y[SPAMR] - CNTACbySPAR[SPAR]
+          }
+
+          #---------------------------------------------------------------------
+          # Second TAE extraction (and M), following TAC extraction
+
+          # Catch from first TAE + second TAE extraction
+          CNTAEbySPARF[SPARFim] <- CNTAEbySPARF[SPARFim] + FTAE[SPARFim] / (FTAEAgg[SPAR] + M[SPAY] / nsubyears) * (1.0 - exp(-(1-TACTime) * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))) * N_Y[SPAMR]
+          N_Y[SPAMR]            <- N_Y[SPAMR] * exp(-(1 - TACTime) * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))
+          CNTAEbySPAR           <- karray(apply(CNTAEbySPARF, sum, MARGIN=c(1:4)), dim=c(nsim,npop,nages,nareas))
+
+          # Total Catch in numbers from TAE and TAC
+          C_Y[SPAMRF] <- CNTAEbySPARF[SPARF] + CNTACbySPARF[SPARFim]
+
+          if (Report)
+          {
+            # aggregate catch in mass for rep 1
+            CMTACsum <- apply(CNTACbySPAR[,,,] * karray(rep(Wt_age_mid[,,,y],nareas),dim=c(nsim,npop, nages, nareas)),sum,MARGIN=1)
+            CMTAEsum <- apply(CNTAEbySPAR[,,,] * karray(rep(Wt_age_mid[,,,y],nareas),dim=c(nsim,npop, nages, nareas)),sum,MARGIN=1)
+
+            print("CMass TAC, TAE, combined:")
+            print(CMTACsum)
+            print(CMTAEsum)
+            print(CMTACsum + CMTAEsum)
+          }
+
+          # end harvest calculations
+          #---------------------------------------------------------------------
+
+          #  age individuals
+          NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
+          NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
+          NBefore_Y[,,1,mm + 1,]              <- 0
+        } # season loop
+      }
+
+      # calculate LL selected numbers for the year for the abundance index
+      NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
+
+      for (isubyears in 1:nsubyears)
+      {
+        for (iCPUE in 1:OM@nCPUE)
+        {
+          NLL_Y[1:nsim,isubyears,iCPUE] <- apply(NLLbySAMR[,,isubyears,OM@CPUEFleetAreas[iCPUE]] * CPUEselTS[,,iCPUE], FUN=sum, MARGIN=1, na.rm=T)
+        }
+      }
+
+      NLLI_Y <- apply(NLL_Y, FUN=sum, MARGIN=1, na.rm=T)
+
+      # copy results back into historic data
+      SSBA[,,y] <- SSBA_Y
+      NLLI[,y]  <- NLLI_Y
+      NLL[,y,,] <- NLL_Y
+
+      # Store results ...
+      .Object@CM[MP,projSims,,y]     <- apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum)
+      .Object@CMbyF[MP,projSims,,y,] <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2,6), sum))
+
+      CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
+
+
+      #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
+      BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
+      B[,,y]      <- apply(BbyS, c(1,2), mean)
+      Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
+
+      FirstIdx <- (y - 1) * nsubyears + 1
+      LastIdx  <- y * nsubyears
+
+      RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
+
+      # Calculate Frep
+      NsoRbySPAM[,,,nsubyears + 1]      <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
+      Frep                              <- findFrep(NsoRbySPAM, M[,,,y - 1], nsim, npop, nages, nsubyears)
+      .Object@F_FMSY[MP,projSims,y - 1] <- Frep / OM@FMSY1[keep(projSims)]
+
+      # Save data for next Frep calculation
+      NsoRbySPAM[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
+
+      # set up next year starting point
+      N_Y[,,,1,]       <- N_Y[,,,nsubyears + 1,]
+      NBefore_Y[,,,1,] <- NBefore_Y[,,,nsubyears + 1,]
+
+      #---------------------------------------------------------------------
+      # End of annual projection
+
+    } # projection year loop
+
+    # Calculate Frep
+    NsoRbySPAM[,,,nsubyears + 1]  <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
+    Frep                          <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears)
+    .Object@F_FMSY[MP,projSims,y] <- Frep / OM@FMSY1[keep(projSims)]
+
+    # Store results ...
+    # archive timing may not be entirely consistent with SS for all quantitities,
+    # but should be internally consistent
+    # recalculate CPUE so last years can be reported even if they are outside of MP years
+
+    OM@CPUEobsY[projSims,nyears:y]    <- qCPUE * (NLLI[,nyears:y] ^ .Object@Ibeta[keep(projSims)]) * .Object@Ierr[keep(projSims),nyears:y]
+    Iobs                              <- OM@CPUEobsY[keep(projSims),1:y]
+    .Object@IobsArchive[MP,projSims,] <- Iobs
+
+    NLLR                                   <- apply(NLL[keep(1:nsim),1:y,,], sum, MARGIN=c(1,2,4))
+    CPUEobsR[1:nsim,1:y,]                  <- qCPUE * (NLLR ^ .Object@Ibeta[keep(1:nsim)]) * rep(.Object@Ierr[keep(projSims),], nCPUE)
+    IobsR                                  <- CPUEobsR[,1:y,]
+    .Object@IobsRArchive[MP,projSims,1:y,] <- IobsR[keep(1:nsim),1:y,]
+
+    # note that not everything is summarized with respect to sub-populations
+
+    .Object@SSB_SSB0[MP,projSims,,]     <- SSBA / apply(SSB0, 1, sum)
+    .Object@B_B0[MP,projSims,,]         <- apply(karray(B[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@B0[keep(projSims)]
+    .Object@C_MSY[MP,keep(projSims),,]  <- karray(.Object@CM[MP,projSims,,], dim=c(nsim,length(targpop),allyears)) / OM@MSY[keep(projSims)]
+    .Object@B_BMSY[MP,projSims,]        <- apply(karray(B[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@BMSY[keep(projSims)]
+    .Object@SSB_SSBMSY[MP,projSims,]    <- apply(karray(SSBA[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@SSBMSY[keep(projSims)]
+    .Object@Rec[MP,projSims,]           <- apply(karray(Rec[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum)
+    .Object@RecYrQtr[MP,projSims,]      <- apply(karray(RecYrQtr[,targpop,], dim=c(nsim,length(targpop),allyears * nsubyears)), c(1,3), sum)
+
+    cat("\n")
+  } # end of MP loop
+
+  print("end MP")
+  if (.Object@CppMethod != 0)
+  {
+    Om.destroy(Obj)
+  }
+
+  .Object@MPs <- MPs
+
+  return (.Object)
+}
+
+
 setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, CppMethod=NA, UseCluster=NA, EffortCeiling = as.double(20.0), TACTime = 0.5, rULim=0.5)
 {
   if (class(OM) != 'OMss')
@@ -1253,10 +2139,35 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
     stop()
   }
 
-  if (class(get(MPs[1])) != 'IO_MP')
+  fixed_MPs     <- c()
+  fixed_MPs_Idx <- c()
+  tuned_MPs     <- c()
+  tuned_MPs_Idx <- c()
+  cn            <- 1
+
+  for (MP in MPs)
   {
-    print(paste('Could not run MSE:',deparse(substitute(MPs[1])),'not of class IO_MP'))
-    stop()
+    MP_class <- class(get(MP))
+
+    if (MP_class == 'IO_MP')
+    {
+      # Normal MP
+      fixed_MPs     <- c(fixed_MPs, MP)
+      fixed_MPs_Idx <- c(fixed_MPs_Idx, cn)
+
+    } else if (MP_class == 'IO_MP_tune')
+    {
+      # Tunable MP
+      tuned_MPs     <- c(tuned_MPs, MP)
+      tuned_MPs_Idx <- c(tuned_MPs_Idx, cn)
+
+    } else
+    {
+      print(paste('Could not run MSE:',deparse(substitute(MP)),'not of class IO_MP or IO_MP_tune'))
+      stop()
+    }
+
+    cn <- cn + 1
   }
 
   .Object@OMName        <- OM@Name
@@ -1328,6 +2239,21 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
   .Object@nfleets   <- nfleets
   .Object@targpop   <- targpop
   .Object@nMPs      <- nMPs
+  .Object@tune      <- rep(1, times=nMPs)
+
+  .Object@tunePMProjPeriod <- OM@tunePMProjPeriod
+
+  if (identical(OM@tunePMProjPeriod, numeric(0)))
+  {
+    .Object@tunePMProjPeriod = .Object@proyears - (.Object@firstMPYr - .Object@lastCalendarYr)
+  }
+
+  allowed_years <- c(1,3,5,10,20,.Object@proyears - (.Object@firstMPYr - .Object@lastCalendarYr))
+
+  if (!any(allowed_years == .Object@tunePMProjPeriod))
+  {
+    stop(paste("tunePMProjPeriod must be one of ", paste(allowed_years, collapse=","), sep=""))
+  }
 
   # Define karrays
   # ---------------------------------------------------------------------------
@@ -1421,12 +2347,55 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
   ncores    <- detectCores()
   nsimsleft <- nallsims
   lastSim   <- 0
-  lastCount <- 0
 
   if (.Object@UseCluster != 0)
   {
     cluster <- makeCluster(ncores)
-    clusterExport(cluster, c("PellaTomlinson4010","PT.f","CPUETarget"))
+
+    if (length(MP_FunctionExports) > 0)
+    {
+      clusterExport(cluster, MP_FunctionExports)
+    }
+  }
+
+  HasTuning <- !identical(OM@tunePM, character(0))
+
+  if (HasTuning && (length(tuned_MPs) > 0))
+  {
+    for (idx in tuned_MPs_Idx)
+    {
+      print(paste("tuning ", MPs[idx]))
+
+      # define an optimisation function for obtaining desired MP tuning
+      opt_fn <- function(tune)
+      {
+        nsimsleft <- nallsims
+        lastSim   <- 0
+
+        while (nsimsleft > 0)
+        {
+          nsim      <- if (nsimsleft > ncores) ncores else nsimsleft
+          firstSim  <- lastSim + 1
+          lastSim   <- firstSim + nsim - 1
+          projSims  <- firstSim:lastSim
+
+          .Object   <- runProjection(.Object, OM, projSims, CPUEobsR, TACEErrorAll, c(MPs[idx]), interval, Report, CppMethod, UseCluster, EffortCeiling, TACTime, rULim, c(tune))
+
+          nsimsleft <- nsimsleft - nsim
+        }
+
+        tuneValue <- tableMSE.f(.Object, MPsSub=c(1))[OM@tunePM][paste(MPs[idx], "y", .Object@tunePMProjPeriod, sep=""),]
+        tuneError <- abs(OM@tunePMTarget - tuneValue)
+
+        print(paste("target:", OM@tunePMTarget, ", value:", tuneValue, ", tuning error:", tuneError, ", tune:", tune))
+
+        return (tuneError)
+      }
+
+      res <- optimise(opt_fn, interval=c(0.05,2.0), tol=OMd@tuneTol)
+
+      .Object@tune[idx] <- res$minimum
+    }
   }
 
   while (nsimsleft > 0)
@@ -1434,868 +2403,10 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
     nsim      <- if (nsimsleft > ncores) ncores else nsimsleft
     firstSim  <- lastSim + 1
     lastSim   <- firstSim + nsim - 1
+    projSims  <- firstSim:lastSim
+    tune      <- rep(1.0, times=length(MPs))
 
-    if (lastCount != nsim)
-    {
-      if (lastCount != 0)
-      {
-        rm(NMass)
-        rm(Z)
-        rm(SSBA)
-        rm(NLLI)
-        rm(NLL)
-        rm(Fdist)
-        rm(CAAF)
-        rm(B)
-        rm(Rec)
-        rm(RecYrQtr)
-      }
-
-      NMass     <- karray(as.double(NA),c(nsim,npop,nages,allyears+1,nsubyears,nareas))  # N in mass
-      Z         <- karray(as.double(NA),c(nsim,npop,nages,allyears+1,nsubyears,nareas))  # Z aggregated over fleets
-      SSBA      <- karray(as.double(NA),c(nsim,npop,allyears))                           # SSB aggregated over ages archive
-      NLLI      <- karray(as.double(NA),c(nsim,allyears))                                # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
-      NLL       <- karray(as.double(NA),c(nsim,allyears,nsubyears,nareas))               # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
-      Fdist     <- karray(as.double(NA),c(nsim,npop,nfleets,nareas))                     # current F dist by fleet
-      CAAF      <- karray(as.double(NA),c(nsim,nages,allyears,nfleets))                  # Catch at age by fleets
-      B         <- karray(as.double(NA),c(nsim,npop,allyears))                           # Biomass annual aggregate series
-      Rec       <- karray(as.double(NA),c(nsim,npop,allyears))                           # Recruitment series
-      RecYrQtr  <- karray(as.double(NA),c(nsim,npop,allyears * nsubyears))               # Quaterly series
-    }
-
-    initYear <- nyears  # last assessment year
-
-    # subset all model parameters needed by the model run
-    Len_age       <- OM@Len_age[keep(firstSim:lastSim),,,]
-    Len_age_mid   <- OM@Len_age_mid[keep(firstSim:lastSim),,,]
-    Wt_age        <- OM@Wt_age[keep(firstSim:lastSim),,,]
-    #Wt_age_SB     <- OM@Wt_age_SB[keep(firstSim:lastSim),,,]
-    Wt_age_mid    <- OM@Wt_age_mid[keep(firstSim:lastSim),,,]
-    h             <- OM@h[keep(firstSim:lastSim),]
-    R0            <- OM@R0[keep(firstSim:lastSim),]
-    Idist         <- OM@Idist[keep(firstSim:lastSim),,,]
-    M             <- OM@M[keep(firstSim:lastSim),,,]
-    mat           <- OM@mat[keep(firstSim:lastSim),,,]
-    Recdevs       <- OM@Recdevs[keep(firstSim:lastSim),,]
-    Recdist       <- OM@Recdist[keep(firstSim:lastSim),,]
-#    Linf          <- OM@Linf[keep(firstSim:lastSim)]
-#    K             <- OM@K[keep(firstSim:lastSim)]
-    q             <- OM@q[keep(firstSim:lastSim),]
-    EByQtrLastYr  <- OM@EByQtrLastYr[keep(firstSim:lastSim),,,]
-    ECurrent      <- OM@ECurrent[keep(firstSim:lastSim),,,]
-    CMCurrent     <- OM@CMCurrent[keep(firstSim:lastSim),,,]
-    sel           <- OM@sel[keep(firstSim:lastSim),,]
-    mov           <- OM@mov[keep(firstSim:lastSim),,,,,]
-    CPUEsel       <- OM@CPUEsel[keep(firstSim:lastSim),,]
-    CPUEobsY      <- OM@CPUEobsY[keep(firstSim:lastSim),]
-    TACEError     <- TACEErrorAll[keep(firstSim:lastSim),]
-
-    lastCount <- nsim
-
-    CAAF[,,1:initYear,]                 <- OM@CAAFss[keep(firstSim:lastSim),,1:initYear,]
-    SSBA[,,1:initYear]                  <- OM@SSBAss[keep(firstSim:lastSim),,1:initYear]
-    B[,,1:initYear]                     <- OM@Bss[keep(firstSim:lastSim),,1:initYear]
-    Rec[,,1:initYear]                   <- OM@Recss[keep(firstSim:lastSim),,1:initYear]
-    RecYrQtr[,,1:(initYear*nsubyears)]  <- OM@RecYrQtrss[keep(firstSim:lastSim),,1:(initYear*nsubyears)]
-    NLLI[,1:initYear]                   <- OM@NLLIss[keep(firstSim:lastSim),1:initYear]
-    NLL[,1:initYear,,]                  <- OM@NLLss[keep(firstSim:lastSim),1:initYear,,]
-
-    # q to keep CPUE on original scale; should move to OM initialization
-    qCPUE <- rep(NA, nsim)
-
-    for(isim in 1:nsim)
-    {
-      qCPUE[isim] <- sum(CPUEobsY[isim,1:nyears][!is.na(CPUEobsY[isim,1:nyears])]) /
-                     sum(NLLI[isim,1:nyears][!is.na(CPUEobsY[isim,1:nyears])])
-    }
-
-    SSB0 <- karray(OM@SSB0[keep(firstSim:lastSim)],dim=c(nsim,npop))
-
-    # Calculate spawning stock biomass per recruit
-    SSBpR   <- SSB0 / R0
-
-    # Ricker SR params
-    bR      <- log(5.0 * h) / (0.8 * SSB0)
-    aR      <- exp(bR * SSB0) / SSBpR
-
-    # historical simulation of one year to re-create N for first projection year
-    # ---------------------------------------------------------------------------
-    cat("Re-running final year of OM")
-    cat("\n")
-
-    y           <- initYear
-    mm          <- nsubyears
-    nSpawnPerYr <- length(OM@Recsubyr)  # rec Index for more than 1 rec per year
-
-    NullRecSpatialDevs <- karray(as.double(1.0),c(nsim,npop,nareas))
-    N_Y                <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
-    NBefore_Y          <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
-    SSN_Y              <- karray(as.double(NA),c(nsim,npop,nages,nsubyears,nareas))
-    NLL_Y              <- karray(as.double(NA),c(nsim,nsubyears,OM@nCPUE))
-    NLLI_Y             <- karray(as.double(NA),c(nsim))
-    C_Y                <- karray(as.double(NA),c(nsim,npop,nages,nsubyears,nareas,nfleets))
-    SSBA_Y             <- karray(as.double(NA),c(nsim,npop))
-    M_Y                <- M[,,,y]
-    mat_Y              <- mat[,,,y]
-    Len_age_Y          <- Len_age[,,,y]
-    Len_age_mid_Y      <- Len_age_mid[,,,y]
-    Wt_age_Y           <- Wt_age[,,,y]
-    #Wt_age_SB_Y        <- Wt_age_SB[,,,y]
-    Wt_age_mid_Y       <- Wt_age_mid[,,,y]
-    RecdevInd_Y        <- (y - 1) * nSpawnPerYr + 1
-    Recdevs_Y          <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
-    #All this stuff used to calculate Frep (summed over regions, mean over age and season)
-    NsoRbySPAMInit     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
-
-    # Initialise starting population
-    N_Y[,,,1,]       <- OM@NBeforeInit[keep(firstSim:lastSim),,,]
-    NBefore_Y[,,,1,] <- OM@NBeforeInit[keep(firstSim:lastSim),,,]
-
-    # Matrix index arrays used in historic and projection R code
-    SPAYMRF <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas, 1:nfleets))
-    SPAMRF  <- SPAYMRF[,c(1,2,3,5,6,7)]
-    SMRF    <- SPAYMRF[,c(1,5,6,7)]
-    SPARF   <- SPAYMRF[,c(1,2,3,6,7)]
-    SFA     <- SPAYMRF[,c(1,7,3)]
-    SF      <- SPAYMRF[,c(1,7)]
-    SARF    <- SPAYMRF[,c(1,3,6,7)]
-    SAR     <- SPAYMRF[,c(1,3,6)]
-    SRF     <- SPAYMRF[,c(1,6,7)]
-
-    SPAYMR  <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas))
-    SPAMR   <- SPAYMR[,c(1,2,3,5,6)]
-    SPAY    <- SPAYMR[,c(1,2,3,4)]
-    SPAR    <- SPAYMR[,c(1,2,3,6)]
-    SA      <- SPAYMR[,c(1,3)]
-
-    if (.Object@CppMethod != 0) # use C++ Baranov sub-routine
-    {
-      Obj <- Om.create(nsim,
-                       npop,
-                       nages,
-                       nsubyears,
-                       nareas,
-                       nfleets,
-                       OM@Recsubyr)
-
-      OmB.nt.initialiseParameters(Obj,
-                                  M_Y,
-                                  R0,
-                                  mat_Y,
-                                  Idist,
-                                  Wt_age_Y,
-                                  h)
-
-      OmB.nt.runHistoric(Obj,
-                         as.double(1.0),
-                         q,
-                         EByQtrLastYr,
-                         R0,
-                         M_Y,
-                         mat_Y,
-                         Idist,
-                         Len_age_Y,
-                         Wt_age_Y,
-                         sel,
-                         mov,
-                         h,
-                         Recdist,
-                         Recdevs_Y,
-                         NullRecSpatialDevs,
-                         OM@SRrel,
-                         N_Y,
-                         NBefore_Y,
-                         SSN_Y,
-                         C_Y,
-                         SSBA_Y)
-    }
-    else # Use R-based projection code
-    {
-      FM <- karray(NA, dim=c(nsim,npop,nages,nareas,nfleets))
-      Z  <- karray(NA, dim=c(nsim,npop,nages,nareas))
-
-      for (mm in 1:nsubyears)
-      {
-        SPAMRF[,4] <- mm
-        SPAMR[,4]  <- mm
-        SMRF[,2]   <- mm
-
-        SSN_Y[,,,mm,] <- NBefore_Y[,,,mm,] * karray(rep(mat[,,,y],times=nareas), c(nsim,npop,nages,nareas))
-        #potential change to _SB
-        SSBA_Y        <- apply(SSN_Y[,,,mm,] * karray(Wt_age[,,,y], dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
-        #SSBA_Y        <- apply(NBefore_Y[,,,mm,] * karray(Wt_age_SB[,,,y], dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
-
-        if (mm %in% OM@Recsubyr)
-        {
-          for(pp in 1:npop)
-          {
-            # ie every qtr for YFT
-            RecdevInd <- (y - 1) * nSpawnPerYr + mm
-
-            # recruit fish
-            if (OM@SRrel[pp] == 1)
-            {
-              # Beverton-Holt recruitment
-              rec <- Recdevs[,pp,RecdevInd] * ((0.8 * R0[,pp] * h[,pp] * SSBA_Y[,pp]) / (0.2 * SSBpR[,pp] * R0[,pp] * (1 - h[,pp]) + (h[,pp] - 0.2) * SSBA_Y[,pp]))
-            }
-            else
-            {
-              # Most transparent form of the Ricker uses alpha and beta params
-              rec <- Recdevs[,pp,RecdevInd] * aR[,pp] * SSBA_Y[,pp] * exp(-bR[,pp] * SSBA_Y[,pp])
-            }
-
-            NBefore_Y[,pp,1,mm,] <- rec * Recdist[,pp,]
-          }
-        }
-
-        # move fish
-        if (nareas > 1)
-        {
-          N_Y[,,,mm,] <- projection.domov(Ntemp=karray(NBefore_Y[,,,mm,], dim=c(nsim,npop,nages,nareas)),
-                                          movtemp=karray(mov[,,,mm,,], dim=c(nsim,npop,nages,nareas,nareas)))
-        }
-        else
-        {
-          N_Y[,,,mm,] <- NBefore_Y[,,,mm,]
-        }
-
-        # Apply M and F
-        FM[SPARF] <- EByQtrLastYr[SMRF] * sel[SFA] * q[SF]
-        Ftot      <- apply(FM, c(1,2,3,4), sum)
-        Z[SPAR]   <- Ftot[SPAR] + M[SPAY] / nsubyears
-
-        C_Y[SPAMRF] <- N_Y[SPAMR] * (1.0 - exp(-Z[SPAR])) * (FM[SPARF] / Z[SPAR])
-
-        N_Y[,,,mm,] <- N_Y[,,,mm,] * exp(-Z[,,,])
-
-        # Age fish
-        NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
-        NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
-        NBefore_Y[,,1,mm + 1,]              <- 0
-        N_Y[,,,mm + 1,]                     <- NBefore_Y[,,,mm + 1,]
-      }
-    }
-
-    # calculate LL selected numbers for the year for the abundance index
-    NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
-
-    for (isubyears in 1:nsubyears)
-    {
-      for (iCPUE in 1:OM@nCPUE)
-      {
-        NLL_Y[1:nsim,isubyears,iCPUE] <- apply(NLLbySAMR[,,isubyears,OM@CPUEFleetAreas[iCPUE]] * CPUEsel[,,iCPUE], FUN=sum, MARGIN=1, na.rm=T)
-      }
-    }
-
-    NLLI_Y <- apply(NLL_Y, FUN=sum, MARGIN=1, na.rm=T)
-
-    # copy results back into historic data
-    SSBA[,,y] <- SSBA_Y
-    NLLI[,y]  <- NLLI_Y
-    NLL[,y,,] <- NLL_Y
-
-    E <- apply(ECurrent, sum, MARGIN=c(1,2,4))
-
-    #first N needs to be re-initialized for each MP
-    NInit_Y <- N_Y[,,,nsubyears + 1,]
-
-    # Store results ...
-    .Object@CM[1:nMPs,firstSim:lastSim,,y]     <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum),each=nMPs)
-    .Object@CMbyF[1:nMPs,firstSim:lastSim,,y,] <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2,6), sum),each=nMPs)
-
-    CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
-    #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
-    BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
-    B[,,y]      <- apply(BbyS, c(1,2), mean)
-    Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
-
-    FirstIdx <- (y - 1) * nsubyears + 1
-    LastIdx  <- y * nsubyears
-
-    RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
-
-    # Save data for Frep calculation
-    NsoRbySPAMInit[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
-
-    # Run projections
-    # ---------------------------------------------------------------------------
-
-    cat("\n Running projections \n")
-
-    firstMPy <- nyears + .Object@firstMPYr - .Object@lastCalendarYr
-    upyrs    <- firstMPy + (0:(floor(OM@proyears / interval))) * interval  # the years in which there are MP updates (e.g. every three years)
-
-    #xxx zzz need to load historical Catch and CL (depending on MP), bypassed for now
-
-    CAAInit     <- karray(NA, dim=c(nsim, nages, nyears))
-    CAAIndInit  <- karray(NA, dim=c(nsim, nages, nyears)) #Catch-at-age for the abudnance index fleets
-
-    if (min(apply(CAAF, c(1,2,3), sum) < 0, na.rm=T))
-    {
-      print("CA<0 a")
-      browser()
-    }
-
-    CAAInit[,,1:nyears]    <- sampCatch(apply(CAAF[,,keep(1:nyears),], c(1,2,3),sum), .Object@nCAAobs)                    # need time series for MP
-    CAAIndInit[,,1:nyears] <- sampCatch(apply(CAAF[,,keep(1:nyears),OM@indexFisheries], c(1,2,3), sum), .Object@nCAAobs) # need time series for MP
-
-    # xxx zzz need to load historical from OM eventually
-    nCALbins <- 30
-
-    #DK: quick and dirty fix
-    #CAL_bins   <- seq(0, max(Linf), length.out=nCALbins)
-    CAL_bins   <- seq(0, 200, length.out=nCALbins - 1)
-    CAL_bins   <- c(CAL_bins, CAL_bins[nCALbins - 1] * 2)     #add big +bin
-    CALInit    <- karray(NA, dim=c(nsim, nCALbins, nyears))
-    CALIndInit <- karray(NA, dim=c(nsim, nCALbins, nyears))
-
-    #DK change to use Len_age rather than recalc
-    #CAL                     <- makeCAL(CAA, Linf=Linf[,1,1:nyears], K=K[,1,1:nyears], t0=t0[1], CAL_bins)
-    #CAL[,,1:nyears]         <- makeCAL(CAA[,,1:nyears,drop=F], Len_age[1,1,,1:nyears], CAL_bins)
-    CALInit[,,1:nyears]     <- makeCAL(CAAInit[,,1:nyears], Len_age_mid[1,1,,1:nyears], CAL_bins)
-    #CALLL10[,,1:nyears]     <- makeCAL(CAALL10[,,1:nyears,drop=F], Len_age[1,1,,1:nyears], CAL_bins)
-    CALIndInit[,,1:nyears]  <- makeCAL(CAAIndInit[,,1:nyears], Len_age_mid[1,1,,1:nyears], CAL_bins)
-
-    for (MP in 1:nMPs)
-    {
-      #MP loop
-      #Need to re-initialize some arrays
-      if (.Object@CppMethod != 0)
-      {
-        N_Y[,,,nsubyears + 1,]        <- NInit_Y
-        NBefore_Y[,,,nsubyears + 1,]  <- NInit_Y
-      }
-      else
-      {
-        N_Y[,,,1,]        <- NInit_Y
-        NBefore_Y[,,,1,]  <- NInit_Y
-      }
-
-      NsoRbySPAM <- NsoRbySPAMInit
-
-      .Object@CM[MP,keep(firstSim:lastSim),,]     <- OM@CBss[keep(firstSim:lastSim),,]
-      .Object@F_FMSY[MP,keep(firstSim:lastSim),] <- OM@Frepss[keep(firstSim:lastSim),] / OM@FMSY1[keep(firstSim:lastSim)]
-
-      CAA     <- CAAInit
-      CAAInd  <- CAAIndInit
-      CAL     <- CALInit
-      CALInd  <- CALIndInit
-
-      set.seed(OM@seed) #repeat the same stochastic history for each MP to keep the comparison fair
-
-      cat(paste(MP,"/",nMPs," Running MSE for ",MPs[MP],"    lastSim ",lastSim,sep=""))  # print a progress report
-      cat("\n")
-      flush.console()                                             # update the console
-
-      # initial TAC and TAE values required for first MP application
-      TAC   <- karray(apply(CMCurrent, sum, MARGIN=c(1)))      # refresh the MP store of TAC among simulations
-      TAE   <- karray(rep(0, nfleets * nsim), dim=c(nsim, nfleets))
-      TACE  <- cbind(TAE, TAC)
-
-      if (.Object@CppMethod != 0)
-      {
-        Om.nt.beginProjection(Obj, as.double(rep(log(0.001), nfleets)))
-      }
-
-      for (y in (nyears + 1):(nyears + proyears))
-      {
-        SPAYMRF[,4] <- y
-        SPAY[,4]    <- y
-
-        #projection years loop includes repeat of first year for rec and initializtion
-        if (.Object@CppMethod == 0)
-        {
-          cat(".")
-        }
-
-        selTS <- sel
-
-        if (OM@selAgeRange >= 1)
-        {
-          #add an age shift to the selectivity noise
-          selAge <- karray(rep(round(OM@selTSSign[keep(1:nsim),,2] * sin((y - nyears - 1) * OM@selTSWaveLen[keep(1:nsim),,2]) * OM@selAgeRange), nages), dim=dim(sel)[1:2])
-
-          for (si in 1:nsim)
-          {
-            for (fi in 1:nfleets)
-            {
-              if (selAge[si,fi] > 0)
-              {
-                selTS[si,fi,(selAge[si,fi] + 1):nages]  <- sel[si,fi,1:(nages - selAge[si,fi])]
-                selTS[si,fi,1:selAge[si,fi]]            <- sel[si,fi,1]
-              }
-              else
-              {
-                if (selAge[si,fi] < 0)
-                {
-                  selTS[si,fi,1:(nages + selAge[si,fi])]          <- sel[si,fi,(1 - selAge[si,fi]):nages]
-                  selTS[si,fi,(nages + selAge[si,fi] + 1):nages]  <- sel[si,fi,nages]
-                }
-              }
-            }
-          }
-        }
-
-        selExp    <- exp(OM@selTSSign[keep(1:nsim),,1] * sin((y-nyears-1) * OM@selTSWaveLen[keep(1:nsim),,1]) * (OM@selExpRange))
-        selTS     <- selTS[keep(1:nsim),,] ^ rep(selExp[keep(1:nsim),],nages)
-        CPUEselTS <- CPUEsel
-
-        for (ai in 1:nareas)
-        {
-          CPUEselTS[1:nsim,,ai] <- selTS[keep(1:nsim),OM@indexFisheries[ai],]
-        }
-
-        #demo plot of selectivity temporal variability
-        # browser()
-        # fii <- 2 # 2= LL region 1, 5=PSLS region 1
-        # plot(sel[1,fii,], type='l', main='LL R1; y = ' %&% (y-61), ylab='Age', xlab='Sel',lwd=1)
-        # #plot(sel[1,fii,], type='l', main='PSLS R1; y = ' %&% (y-61), ylab='Age', xlab='Sel')
-        # lines(selTS[1,fii,], col=fii, lty=2)
-
-        if ((y %in% c(nyears + proyears)) && (MP == 1))
-        {
-          #plot some original and  modified selectivities
-          par(mfrow=c(4,4))
-
-          if(Report){
-            for (fi in 1:nfleets)
-            {
-              plot(sel[1,fi,], type='l', main='sel')
-              lines(selTS[1,fi,], col=2)
-            }
-
-            for (ai in 1:min(16,nCPUE))
-            {
-              plot(CPUEsel[1,,ai], type='l', main="CPUE sel")
-              lines(CPUEselTS[1,,ai], col=3)
-            }
-          }
-        }
-
-        # set the bridging Catches between the last OM year and the first MP year
-        firstMPy <- nyears + .Object@firstMPYr - .Object@lastCalendarYr
-
-        if (y < firstMPy)
-        {
-          yBridge <- y - nyears
-
-          if ((yBridge <= length(.Object@catchBridge)) && (sum(.Object@catchBridge) > 0))
-          {
-            # use the known aggregate catch imported from the OMd
-            TAC   <- .Object@catchBridge[yBridge]
-          }
-          else
-          {
-            #use the previous aggregate catch+error
-            TAC   <- TAC * exp(rnorm(length(TAC)) * .Object@catchBridgeCV - 0.5 * .Object@catchBridgeCV ^ 2)
-          }
-
-          TAE   <- karray(rep(0, nfleets * nsim), dim=c(nsim, nfleets))
-          TACE  <- cbind(TAE, TAC)
-        }
-
-        if (y %in% upyrs)
-        {
-          #CPUEobsY based on merger of observed and simulated CPUE (proportional to IObs in projections)
-          #calculate CPUE up to but not including the current year (MP does not necessarily have access to this value depending on data lag)
-          CPUEobsY[,nyears:(y - 1)] <- qCPUE * (NLLI[,nyears:(y - 1)] ^ .Object@Ibeta[keep(firstSim:lastSim)]) * .Object@Ierr[keep(firstSim:lastSim),nyears:(y - 1)]
-          Iobs                      <- CPUEobsY[,1:(y - 1)]
-
-          # Operate MP S P A Y M R          #MP applied in these years only
-
-          # Simulate imperfect information --------------------------------------
-
-          if (y >=firstMPy) #DK change ... xxx why +1 ?
-          {
-            # DK change in relation to redefined upyrs
-            #update data
-            if (y == firstMPy)
-            {
-              nuy <- (nyears + 1):(firstMPy - 1)
-            }
-            else
-            {
-              nuy <- (upyrs[match(y, upyrs) - 1]):(y - 1)
-            }
-
-            nCAA    <- sampCatch(apply(CAAF[,,keep(nuy),], c(1,2,3), sum), .Object@nCAAobs)
-
-            set.seed(OM@seed + y * nsim)
-
-            nCAAInd <- sampCatch(apply(CAAF[,,keep(nuy),OM@indexFisheries], c(1,2,3), sum), .Object@nCAAobs)
-
-            set.seed(OM@seed + y * nsim + 1)
-
-            CAA     <- abind(CAA, nCAA, along=3)
-            CAAInd  <- abind(CAAInd, nCAAInd, along=3)
-            #CAL     <- abind(CAL, makeCAL(nCAA, Linf=OM@Linf[,1,nuy], K=K[,1,nuy], t0=t0[1], CAL_bins), along=3)
-            CAL     <- abind(CAL, makeCAL(nCAA, Len_age_mid[1,1,,nuy], CAL_bins), along=3)
-            CALInd  <- abind(CALInd, makeCAL(nCAAInd, Len_age_mid[1,1,,nuy], CAL_bins), along=3)
-          }
-
-          Cobs <- apply(.Object@CM[MP,keep(firstSim:lastSim),,1:(y - 1)], c(1,3), sum) * .Object@Cerr[keep(firstSim:lastSim),1:(y - 1)]
-
-          # xxx zzz MP rate parameters presumably need to be harmonized for YFT as well
-          # xxx zzz need to finish growth curve substitution flagged ###
-          # missing dimension problem temporarily commented out...
-
-          pset<-list("Cobs"     = Cobs[,1:(y - OM@MPDataLag)],
-                     #"K"        = K[,1,y - 1]*.Object@Kb[keep(firstSim:lastSim)],
-                     #"Linf"     = Linf[,1,y - 1]*.Object@Kb[keep(firstSim:lastSim)],
-                     "t0"       = rep(OM@t0[1],nsim),
-                     "M"        = M[,1,,(y - 1)]*.Object@Mb[keep(firstSim:lastSim)],
-                     "MSY"      = OM@MSY[keep(firstSim:lastSim)] * .Object@MSYb[keep(firstSim:lastSim)],
-                     "BMSY"     = OM@BMSY[keep(firstSim:lastSim)] * .Object@BMSYb[keep(firstSim:lastSim)],
-                     "UMSY"     = OM@UMSY[keep(firstSim:lastSim)] * .Object@FMSYb[keep(firstSim:lastSim)],
-                     "a"        = rep(OM@a, nsim),
-                     "b"        = rep(OM@b, nsim),
-                     "nages"    = nages,
-                     "Mat"      = mat[,1,,1:(y - 1)],
-
-                     #need to lag data available for HCR by appropriate amount (OM@MPDataLag)
-                     "CMCsum"   = apply(CMCurrent, sum, MARGIN=1),
-                     "UMSY_PI"  = OM@UMSY[keep(firstSim:lastSim)],
-                     "Iobs"     = Iobs[,keep(1:(y - OM@MPDataLag))],
-                     "CAA"      = CAA[,,keep(1:(y - OM@MPDataLag))],
-                     "CAL"      = CAL[,,keep(1:(y - OM@MPDataLag))],
-                     "CALInd"   = CALInd[,,keep(1:(y - OM@MPDataLag))],
-                     "CAL_bins" = CAL_bins,
-                     "prevTACE" = TACE,
-                     "y"        = y - OM@MPDataLag)
-
-          simset <- karray(1:nsim, c(nsim))
-
-          if (.Object@UseCluster != 0)
-          {
-            TACE <- t(parSapply(cluster, simset, FUN=runMP, get(MPs[MP]), pset))
-            printClusterOutput(simset)
-          }
-          else
-          {
-            TACE <- t(sapply(simset, FUN=get(MPs[MP]), pset))
-          }
-        }
-
-        # Unpack MP TACs and TAEs
-        TAC    <- TACE[,ncol(TACE)]  # TAC is final entry
-        TAEbyF <- karray(TACE[,1:(ncol(TACE) - 1)], dim=c(nsim,nfleets))
-        #if the fleet has a TAE, this vector is used to exclude the fleet from the TAC extractions
-
-        # Start of annual projection
-        #---------------------------------------------------------------------
-        #Spatial devs in rec (affect spatial distribution but not total; streamlined implementationsame for all sims, pops, area)
-        recSpatialDevs <- karray(exp(OM@ReccvR[keep(firstSim:lastSim)] * rnorm(length(OM@Recdist[keep(firstSim:lastSim),,]))), dim=dim(OM@Recdist[keep(firstSim:lastSim),,]))
-        recSpatialDevs <- recSpatialDevs / karray(rep(apply(recSpatialDevs, FUN=mean, MARGIN=c(1,2)), nareas),dim=dim(OM@Recdist[keep(firstSim:lastSim),,]))
-
-        if (.Object@CppMethod != 0)
-        {
-          M_Y           <- M[,,,y]
-          mat_Y         <- mat[,,,y]
-          Len_age_Y     <- Len_age[,,,y]
-          Len_age_mid_Y <- Len_age_mid[,,,y]
-          Wt_age_Y      <- Wt_age[,,,y]
-          #Wt_age_SB_Y   <- Wt_age_SB_Y[,,,y]
-          Wt_age_mid_Y  <- Wt_age_mid[,,,y]
-          RecdevInd_Y   <- (y - 1) * nSpawnPerYr + 1
-          Recdevs_Y     <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
-
-          Om.nt.projection(Obj,
-                           y,
-                           as.integer(if (Report) 1 else 0),
-                           EffortCeiling,
-                           TAC,
-                           TAEbyF,
-                           TACEError,
-                           ECurrent,
-                           CMCurrent,
-                           q,
-                           R0,
-                           M_Y,
-                           mat_Y,
-                           Idist,
-                           Len_age_Y,
-                           Wt_age_Y,
-                           Wt_age_mid_Y,
-                           selTS,
-                           mov,
-                           h,
-                           Recdist,
-                           Recdevs_Y,
-                           recSpatialDevs,
-                           OM@SRrel,
-                           N_Y,
-                           NBefore_Y,
-                           SSN_Y,
-                           C_Y,
-                           SSBA_Y,
-                           as.integer(100));
-        }
-        else
-        {
-          # distribute TAC by season and fleet for all sims, for all fishries that do not have TAEs
-          isTACFleet          <- karray(NA, dim=dim(CMCurrent))
-          SMRFim              <- as.matrix(expand.grid(1:nsim, 1:nsubyears, 1:nareas, 1:nfleets))
-          SFim                <- SMRFim[,c(1,4)]
-          isTACFleet[SMRFim]  <- karray(rep((!TAEbyF[1,]) * 1.0, each=nsim), dim=c(nsim, nfleets))[SFim]  # exclude TAC fleets
-          TACbySMRF           <- TAC * CMCurrent * isTACFleet / apply(CMCurrent * isTACFleet, sum, MARGIN=c(1))
-
-          for (mm in 1:nsubyears)
-          {
-            SPAYMRF[,5]  <- mm
-            SPAMRF[,4]   <- mm
-            SPAMR[,4]    <- mm
-            SMRF[,2]     <- mm
-
-            N_Y[,,,mm,]   <- NBefore_Y[,,,mm,]
-            SSN_Y[,,,mm,] <- NBefore_Y[,,,mm,] * karray(rep(mat[,,,y],times=nareas), c(nsim,npop,nages,nareas))
-            #potential change
-            SSBA_Y        <- apply(SSN_Y[,,,mm,] * karray(rep(Wt_age[,,,y],times=nareas), dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
-            #SSBA_Y        <- apply(NBefore_Y[,,,mm,] * karray(rep(Wt_age_SB[,,,y],times=nareas), dim=c(nsim,npop,nages,nareas)), c(1,2), sum, na.rm=T)
-
-            # do recruitment
-            if(mm %in% OM@Recsubyr)
-            {
-              for(pp in 1:npop)
-              {
-                # ie every qtr for YFT
-                RecdevInd <- (y - 1) * nSpawnPerYr + mm
-
-                # recruit fish
-                if (OM@SRrel[pp] == 1)
-                {
-                  # Beverton-Holt recruitment
-                  rec <- Recdevs[,pp,RecdevInd] * ((0.8 * R0[,pp] * h[,pp] * SSBA_Y[,pp]) / (0.2 * SSBpR[,pp] * R0[,pp] * (1 - h[,pp]) + (h[,pp] - 0.2) * SSBA_Y[,pp]))
-                }
-                else
-                {
-                  # Most transparent form of the Ricker uses alpha and beta params
-                  rec <- Recdevs[,pp,RecdevInd] * aR[,pp] * SSBA_Y[,pp] * exp(-bR[,pp] * SSBA_Y[,pp])
-                }
-
-                N_Y[,pp,1,mm,]        <- rec * Recdist[,pp,] * recSpatialDevs[,pp,]
-                NBefore_Y[,pp,1,mm,]  <- N_Y[,pp,1,mm,]
-              }
-            }
-
-            # move fish (order of events altered from original)
-            if (nareas > 1)
-            {
-              N_Y[,,,mm,] <- projection.domov(Ntemp=karray(N_Y[,,,mm,], dim=c(nsim,npop,nages,nareas)),
-                                              movtemp=karray(mov[,,,mm,,], dim=c(nsim,npop,nages,nareas,nareas)))
-            }
-
-            #---------------------------------------------------------------------
-            # Use the new population dynamics for mix of TACs and TAEs
-            # Pope's approximation; values up to ~0.6 may be substantially closer
-            # to Baranov depending on TAC, TAE and M
-
-            #TACTime <- 0.5
-
-            CNTACbySPARF <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets))
-            CNTAEbySPARF <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets))
-
-            # Fishing mort for TAE-managed fleets
-            FTAE    <- karray(0, dim=c(nsim,npop,nages,nareas,nfleets)) #by fleet
-            FTAEAgg <- karray(0, dim=c(nsim,npop,nages,nareas))         #aggregated over fleets
-
-            # Define some index matrices
-            SPARFim <- SPAYMRF[,c(1,2,3,6,7)]
-            SFim    <- SPAYMRF[,c(1,7)]
-            SMRFim  <- SPAYMRF[,c(1,5,6,7)]
-
-            # TAE Fs by fleet
-            FTAE[SPARFim] <- ECurrent[SMRFim] * TAEbyF[SFim] * selTS[SFA] * q[SF] * TACEError[SFim]
-
-            #sum TAE Fs over fleets
-            FTAEAgg <- apply(FTAE, MARGIN=c(1:4), sum)
-
-            #---------------------------------------------------------------------
-            # first half timestep natural mort and F for TAEs (before TAC)
-
-            CNTAEbySPARF[SPARFim] <- FTAE[SPARFim] / (FTAEAgg[SPAR] + M[SPAY] / nsubyears) * (1.0 - exp(-TACTime * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))) * N_Y[SPAMR]
-            N_Y[SPAMR]            <- N_Y[SPAMR] * exp(-TACTime * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))
-
-            #---------------------------------------------------------------------
-            # mid-year TAC extraction
-
-            CNTACbySPAR <- karray(0.0, dim=c(nsim,npop,nages,nareas))
-
-            # skip if all TACs = 0
-            if ((sum(isTACFleet) > 0) && (TAC > 0.0))
-            {
-              # xxx still need to add TAC implementation error
-              # xxx some of this is probably incorrect for multi-population case
-
-              # Vulnerable biomass and numbers for each fishery by pop
-              VBbySPARF    <- karray((N_Y[SPAMR] * Wt_age_mid[SPAY] * selTS[SFA]), dim=c(nsim,npop,nages,nareas,nfleets))
-
-              # VB summed over ages (and populations)
-              VBbySRF      <- apply(VBbySPARF,sum,MARGIN=c(1,4,5))
-
-              # U for each fishery and region independently (TAC could be unachievable , i.e. U>1)
-              UbySRFtest                 <- TACbySMRF[,mm,,] / VBbySRF[]
-              UbySRFtest[UbySRFtest > 9] <- 9 #bound ridiculous U to prevent exp(U) -> inf
-
-              # U for each age by region and fishery  (could be unachievable, i.e. U>1)
-              UbySARFtest       <- karray(NA, dim=c(nsim,nages,nareas,nfleets))
-              UbySARF           <- karray(NA, dim=c(nsim,nages,nareas,nfleets))
-              UbySARFtest[SARF] <- UbySRFtest[SRF] * selTS[SFA] * q[SF] * TACEError[SFim]
-
-              # U for each age by region aggregated over fisheries
-              UbySARtest <- apply(UbySARFtest, sum, MARGIN=c(1:3))
-
-              # ad hoc limit on U
-              UbySAR                     <- UbySARtest
-              UbySAR[UbySARtest > rULim] <- rULim+(1-rULim-0.3)*(1-exp(-UbySARtest[UbySARtest > rULim]+rULim))
-
-              # rULim=50% original: proportional to U=0.5, then approaches an asymptote of 0.88;
-              #if(rULim == 0.5) UbySAR[UbySARtest > 0.5] <- exp(UbySARtest[UbySARtest > 0.5]) / (1.0 + exp(UbySARtest[UbySARtest > 0.5])) - 0.122
-              # rULim=30% - seemingly best (coupled with the TACtime=0.01); proportional to U=0.3, then approaches an asymptote of 0.28
-              #if(rULim == 0.3) UbySAR[UbySARtest > 0.3] <- exp(UbySARtest[UbySARtest > 0.3]) / (1.0 + exp(UbySARtest[UbySARtest > 0.3])) - 0.28
-              #test  H65
-              #UbySAR[UbySARtest > 0.65] <- exp(UbySARtest[UbySARtest > 0.65]) / (1.0 + exp(UbySARtest[UbySARtest > 0.65])) - 0.01
-              #test  H10
-              #UbySAR[UbySARtest > 0.1] <- exp(UbySARtest[UbySARtest > 0.1]) / (1.0 + exp(UbySARtest[UbySARtest > 0.1])) - 0.43
-              #test  H99
-              #UbySAR[UbySARtest > 0.99] <- 0.99
-
-              # rescale U for each fishery as a proportion of the fishery-aggregate U (only relevant for those that exceed U limit)
-              UbySARF[SARF] <- UbySAR[SAR] * UbySARFtest[SARF] / UbySARtest[SAR]
-
-              # TAC catch in numbers (U identical for all pops, xxx probably not correct for multiple pops)
-              CNTACbySPARF[SPARFim] <- UbySARF[SARF] * N_Y[SPAMR]
-
-              # aggregate catch over fleets
-              CNTACbySPAR <- karray(apply(CNTACbySPARF, sum, MARGIN=c(1:4)), dim=c(nsim,npop,nages,nareas))
-
-              # Update N post-TAC extraction
-              N_Y[SPAMR] <- N_Y[SPAMR] - CNTACbySPAR[SPAR]
-            }
-
-            #---------------------------------------------------------------------
-            # Second TAE extraction (and M), following TAC extraction
-
-            # Catch from first TAE + second TAE extraction
-            CNTAEbySPARF[SPARFim] <- CNTAEbySPARF[SPARFim] + FTAE[SPARFim] / (FTAEAgg[SPAR] + M[SPAY] / nsubyears) * (1.0 - exp(-(1-TACTime) * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))) * N_Y[SPAMR]
-            N_Y[SPAMR]            <- N_Y[SPAMR] * exp(-(1 - TACTime) * (M[SPAY] / nsubyears + FTAEAgg[SPAR]))
-            CNTAEbySPAR           <- karray(apply(CNTAEbySPARF, sum, MARGIN=c(1:4)), dim=c(nsim,npop,nages,nareas))
-
-            # Total Catch in numbers from TAE and TAC
-            C_Y[SPAMRF] <- CNTAEbySPARF[SPARF] + CNTACbySPARF[SPARFim]
-
-            if (Report)
-            {
-              # aggregate catch in mass for rep 1
-              CMTACsum <- apply(CNTACbySPAR[,,,] * karray(rep(Wt_age_mid[,,,y],nareas),dim=c(nsim,npop, nages, nareas)),sum,MARGIN=1)
-              CMTAEsum <- apply(CNTAEbySPAR[,,,] * karray(rep(Wt_age_mid[,,,y],nareas),dim=c(nsim,npop, nages, nareas)),sum,MARGIN=1)
-
-              print("CMass TAC, TAE, combined:")
-              print(CMTACsum)
-              print(CMTAEsum)
-              print(CMTACsum + CMTAEsum)
-            }
-
-            # end harvest calculations
-            #---------------------------------------------------------------------
-
-            #  age individuals
-            NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
-            NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
-            NBefore_Y[,,1,mm + 1,]              <- 0
-          } # season loop
-        }
-
-        # calculate LL selected numbers for the year for the abundance index
-        NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
-
-        for (isubyears in 1:nsubyears)
-        {
-          for (iCPUE in 1:OM@nCPUE)
-          {
-            NLL_Y[1:nsim,isubyears,iCPUE] <- apply(NLLbySAMR[,,isubyears,OM@CPUEFleetAreas[iCPUE]] * CPUEselTS[,,iCPUE], FUN=sum, MARGIN=1, na.rm=T)
-          }
-        }
-
-        NLLI_Y <- apply(NLL_Y, FUN=sum, MARGIN=1, na.rm=T)
-
-        # copy results back into historic data
-        SSBA[,,y] <- SSBA_Y
-        NLLI[,y]  <- NLLI_Y
-        NLL[,y,,] <- NLL_Y
-
-        # Store results ...
-        .Object@CM[MP,firstSim:lastSim,,y]     <- apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum)
-        .Object@CMbyF[MP,firstSim:lastSim,,y,] <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2,6), sum))
-
-        CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
-
-
-        #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
-        BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
-        B[,,y]      <- apply(BbyS, c(1,2), mean)
-        Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
-
-        FirstIdx <- (y - 1) * nsubyears + 1
-        LastIdx  <- y * nsubyears
-
-        RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
-
-        # Calculate Frep
-        NsoRbySPAM[,,,nsubyears + 1]              <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
-        Frep                                      <- findFrep(NsoRbySPAM, M[,,,y - 1], nsim, npop, nages, nsubyears)
-        .Object@F_FMSY[MP,firstSim:lastSim,y - 1] <- Frep / OM@FMSY1[keep(firstSim:lastSim)]
-
-        # Save data for next Frep calculation
-        NsoRbySPAM[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
-
-        # set up next year starting point
-        N_Y[,,,1,]       <- N_Y[,,,nsubyears + 1,]
-        NBefore_Y[,,,1,] <- NBefore_Y[,,,nsubyears + 1,]
-
-        #---------------------------------------------------------------------
-        # End of annual projection
-
-      } # projection year loop
-
-      # Calculate Frep
-      NsoRbySPAM[,,,nsubyears + 1]          <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
-      Frep                                  <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears)
-      .Object@F_FMSY[MP,firstSim:lastSim,y] <- Frep / OM@FMSY1[keep(firstSim:lastSim)]
-
-      # Store results ...
-      # archive timing may not be entirely consistent with SS for all quantitities,
-      # but should be internally consistent
-      # recalculate CPUE so last years can be reported even if they are outside of MP years
-
-      OM@CPUEobsY[firstSim:lastSim,nyears:y]      <- qCPUE * (NLLI[,nyears:y] ^ .Object@Ibeta[keep(firstSim:lastSim)]) * .Object@Ierr[keep(firstSim:lastSim),nyears:y]
-      Iobs                                        <- OM@CPUEobsY[keep(firstSim:lastSim),1:y]
-      .Object@IobsArchive[MP,firstSim:lastSim,]   <- Iobs
-
-      NLLR                                           <- apply(NLL[keep(1:nsim),1:y,,], sum, MARGIN=c(1,2,4))
-      CPUEobsR[1:nsim,1:y,]                          <- qCPUE * (NLLR ^ .Object@Ibeta[keep(1:nsim)]) * rep(.Object@Ierr[keep(firstSim:lastSim),], nCPUE)
-      IobsR                                          <- CPUEobsR[,1:y,]
-      .Object@IobsRArchive[MP,firstSim:lastSim,1:y,] <- IobsR[keep(1:nsim),1:y,]
-
-      # note that not everything is summarized with respect to sub-populations
-
-      .Object@SSB_SSB0[MP,firstSim:lastSim,,]     <- SSBA / apply(SSB0, 1, sum)
-      .Object@B_B0[MP,firstSim:lastSim,,]         <- apply(karray(B[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@B0[keep(firstSim:lastSim)]
-      .Object@C_MSY[MP,keep(firstSim:lastSim),,]  <- karray(.Object@CM[MP,firstSim:lastSim,,], dim=c(nsim,length(targpop),allyears)) / OM@MSY[keep(firstSim:lastSim)]
-      .Object@B_BMSY[MP,firstSim:lastSim,]        <- apply(karray(B[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@BMSY[keep(firstSim:lastSim)]
-      .Object@SSB_SSBMSY[MP,firstSim:lastSim,]    <- apply(karray(SSBA[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum) / OM@SSBMSY[keep(firstSim:lastSim)]
-      .Object@Rec[MP,firstSim:lastSim,]           <- apply(karray(Rec[,targpop,], dim=c(nsim,length(targpop),allyears)), c(1,3), sum)
-      .Object@RecYrQtr[MP,firstSim:lastSim,]      <- apply(karray(RecYrQtr[,targpop,], dim=c(nsim,length(targpop),allyears * nsubyears)), c(1,3), sum)
-
-      cat("\n")
-    } # end of MP loop
-
-    print("end MP")
-    if (.Object@CppMethod != 0)
-    {
-      Om.destroy(Obj)
-    }
-
-    .Object@MPs <- MPs
+    .Object   <- runProjection(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, interval, Report, CppMethod, UseCluster, EffortCeiling, TACTime, rULim, .Object@tune)
 
     nsimsleft <- nsimsleft - nsim
   }
