@@ -2358,6 +2358,8 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
     }
   }
 
+  RNG_state <- .GlobalEnv$.Random.seed
+
   HasTuning <- !identical(OM@tunePM, character(0))
 
   if (HasTuning && (length(tuned_MPs) > 0))
@@ -2369,6 +2371,8 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
       # define an optimisation function for obtaining desired MP tuning
       opt_fn <- function(tune)
       {
+        .GlobalEnv$.Random.seed <- RNG_state
+
         nsimsleft <- nallsims
         lastSim   <- 0
 
@@ -2397,6 +2401,8 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
       .Object@tune[idx] <- res$minimum
     }
   }
+
+  .GlobalEnv$.Random.seed <- RNG_state
 
   while (nsimsleft > 0)
   {
