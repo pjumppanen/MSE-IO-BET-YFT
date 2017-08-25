@@ -94,8 +94,14 @@ setClass("OMd",representation(
                tunePMProjPeriod = "numeric",
                tunePM           = "character", # name of performance measure to tune to
                tunePMTarget     = "numeric",   # level of performance measure that tuning should achieve
-               tuneTol          = "numeric"    # relative level of precision required in tuning
-))
+               tuneTol          = "numeric",   # relative level of precision required in tuning
+               tuneLogDomain    = "numeric"    # log base 10 of search domain for tuning solution. It is a log domain to improve search dynamic range
+             ),
+             prototype = list(
+               tuneTol       = 0.01,
+               tuneLogDomain = c(-3,0.5)
+             )
+)
 
 
 
@@ -310,7 +316,8 @@ setClass("OMss",representation(
                tunePMProjPeriod = "numeric",
                tunePM           = "character", # name of performance measure to tune to
                tunePMTarget     = "numeric",   # level of performance measure that tuning should achieve
-               tuneTol          = "numeric"    # relative level of precision required in tuning
+               tuneTol          = "numeric",   # relative level of precision required in tuning
+               tuneLogDomain    = "numeric"    # log base 10 of search domain for tuning solution. It is a log domain to improve search dynamic range
               ))
 
 setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
@@ -391,6 +398,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
   .Object@tunePM            <- OMd@tunePM
   .Object@tunePMTarget      <- OMd@tunePMTarget
   .Object@tuneTol           <- OMd@tuneTol
+  .Object@tuneLogDomain     <- OMd@tuneLogDomain
 
   set.seed(.Object@seed)
 
@@ -2369,10 +2377,13 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
       print(paste("tuning ", MPs[idx]))
 
       # define an optimisation function for obtaining desired MP tuning
-      opt_fn <- function(tune)
+      # and use a log10 based tuning argument to provide a wide dynamic
+      # range for the minimisation domain
+      opt_fn <- function(tuneLog10)
       {
         .GlobalEnv$.Random.seed <- RNG_state
 
+        tune      <- 10 ^ tuneLog10
         nsimsleft <- nallsims
         lastSim   <- 0
 
@@ -2396,9 +2407,9 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
         return (tuneError)
       }
 
-      res <- optimise(opt_fn, interval=c(0.05,2.0), tol=OMd@tuneTol)
+      res <- optimise(opt_fn, interval=OM@tuneLogDomain, tol=OMd@tuneTol)
 
-      .Object@tune[idx] <- res$minimum
+      .Object@tune[idx] <- 10 ^ res$minimum
     }
   }
 
