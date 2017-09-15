@@ -2256,7 +2256,7 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
     .Object@tunePMProjPeriod = .Object@proyears - (.Object@firstMPYr - .Object@lastCalendarYr)
   }
 
-  allowed_years <- c(1,3,5,10,20,.Object@proyears - (.Object@firstMPYr - .Object@lastCalendarYr))
+  allowed_years <- c(1,3,5,10,20,.Object@proyears - (.Object@firstMPYr - .Object@lastCalendarYr),1001,1002)
 
   if (!any(allowed_years == .Object@tunePMProjPeriod))
   {
@@ -2400,7 +2400,8 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
         }
 
         tuneValue <- tableMSE.f(.Object, MPsSub=c(1))[OM@tunePM][paste(MPs[idx], "y", .Object@tunePMProjPeriod, sep=""),]
-        tuneError <- abs(OM@tunePMTarget - tuneValue)
+        #tuneError <- abs(OM@tunePMTarget - tuneValue)
+        tuneError <- (OM@tunePMTarget - tuneValue)^2
 
         print(paste("target:", OM@tunePMTarget, ", value:", tuneValue, ", tuning error:", tuneError, ", tune:", tune))
 

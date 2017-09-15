@@ -26,6 +26,9 @@ getperf <- function(object)
 }
 
 
+
+
+
 #DK modified summary for MWG statistics
 tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, nsimSub=NA)
 {
@@ -43,12 +46,27 @@ tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, 
   firstMPy  <- MSEobj@nyears + MSEobj@firstMPYr - MSEobj@lastCalendarYr
 
   # projection period to report on (starting from the first MPyear and ignoring the bridging years)
-  projPeriodList <- c(1,3,5,10,20,allyears-firstMPy)
+#  projPeriodList <- c(1,3,5,10,20,allyears-firstMPy)
+#  for (pp in projPeriodList)
+#  {
+#    projPeriod   <-(firstMPy):(firstMPy + pp -1)
+#    projPeriodm1 <-(firstMPy-1):(firstMPy + pp -2)
+
+  projPeriodList <- c(1,3,5,10,20,allyears-firstMPy,1001,1002) #1001-2 are YFT tuning years (temporary 'cause tunin spects numeric)
 
   for (pp in projPeriodList)
   {
-    projPeriod   <-(firstMPy):(firstMPy + pp -1)
-    projPeriodm1 <-(firstMPy-1):(firstMPy + pp -2)
+    if(pp<1000){
+      ppnum <- as.numeric(pp)
+      projPeriod   <-(firstMPy):(firstMPy + ppnum -1)
+    }
+    if(pp>1000){
+      if (pp == 1001) projPeriod  <- MSEobj@nyears - MSEobj@lastCalendarYr + 2019:2039
+      if (pp == 1002) projPeriod  <- MSEobj@nyears - MSEobj@lastCalendarYr + 2024
+      ppnum <- length(projPeriod)
+    }
+
+    projPeriodm1 <- projPeriod-1
 
     #Performance statistics dim(nMPs, nsim) #numbers from final report
     #1
@@ -67,10 +85,10 @@ tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, 
     FoFtarg       <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
 
     #6 - Probability in green Kobe quadrant
-    GK            <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] < 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] > 1, 1:2, sum) / (pp), 3)
+    GK            <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] < 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] > 1, 1:2, sum) / (ppnum), 3)
 
     #7 - Probability in red Kobe quadrant
-    RK            <-round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] > 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] < 1, 1:2, sum) / (pp), 3)
+    RK            <-round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] > 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] < 1, 1:2, sum) / (ppnum), 3)
 
     # 8 Pr(SB > 0.2SB0)
     PrSBgt0.2SB0  <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod]>0.2, MARGIN=c(1:2), mean), digits=2)

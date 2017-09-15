@@ -15,10 +15,56 @@ MP_FunctionExports <- c()
 #Pella-Tomlinson 40:10-type MPs (details implemented below)
 #===============================================================================
 
+#tuning
 PT41.tune.9<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0){
   return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp))
 }
 class(PT41.tune.9)<-"IO_MP_tune"
+
+PT41.tune.15<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1., deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT41.tune.15)<-"IO_MP_tune"
+
+PT41.tune.05<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0, deltaTACLimUp=0.05, deltaTACLimDown=0.05){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT41.tune.05)<-"IO_MP_tune"
+
+
+PT61.tune.15 <-function(x,pset, BLower=0.1,BUpper=0.6,CMaxProp=1.0, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT61.tune.15)<-"IO_MP_tune"
+
+PT40.tune.15 <-function(x,pset, BLower=0.,BUpper=0.4,CMaxProp=1.0, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT40.tune.15)<-"IO_MP_tune"
+
+PT30.tune.15 <-function(x,pset, BLower=0.,BUpper=0.3,CMaxProp=1.0, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT30.tune.15)<-"IO_MP_tune"
+
+#tuned to OM-ref, 216 reps, tuning level3
+PT41.15.216.t3<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.4395871){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp))
+}
+class(PT41.15.216.t3)<-"IO_MP"
+
+
+# the fishing mortality equivalent of PT41.tune.15
+PT41F.tune.15<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1., useF=T, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=pset$tune * CMaxProp, deltaTACLimUp=deltaTACLimUp, deltaTACLimDown=deltaTACLimDown))
+}
+class(PT41F.tune.15)<-"IO_MP_tune"
+
+
+
+
+
+# non-tuning
 
 PT41.100.9<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0){
   return(PellaTomlinson4010(x,pset, BLower=BLower,BUpper=BUpper,CMaxProp=CMaxProp))
@@ -93,6 +139,34 @@ class(PT82.100.5)<-"IO_MP"
 # Aim fot CPUE target MPs
 #===============================================================================
 
+#tuning
+IT5.tune.15 <- function(x,pset,yrsmth=5,lambda=0.4,xx=0.2, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(CPUETarget(x,pset, ITargPars=c(pset$tune *1.0,deltaTACLimUp,deltaTACLimDown,0.2,0.1,0.1,0.1,0.1), yrsmth=yrsmth,lambda=lambda,xx=xx))
+}
+class(IT5.tune.15) <- "IO_MP_tune"
+
+IT10.tune.15 <- function(x,pset,yrsmth=10,lambda=0.4,xx=0.2, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(CPUETarget(x,pset, ITargPars=c(pset$tune *1.0,deltaTACLimUp,deltaTACLimDown,0.2,0.1,0.1,0.1,0.1), yrsmth=yrsmth,lambda=lambda,xx=xx))
+}
+class(IT10.tune.15) <- "IO_MP_tune"
+
+IT5.tune.05 <- function(x,pset,yrsmth=5,lambda=0.4,xx=0.2, deltaTACLimUp=0.05, deltaTACLimDown=0.05){
+  return(CPUETarget(x,pset, ITargPars=c(pset$tune *1.0,deltaTACLimUp,deltaTACLimDown,0.2,0.1,0.1,0.1,0.1), yrsmth=yrsmth,lambda=lambda,xx=xx))
+}
+class(IT5.tune.05) <- "IO_MP_tune"
+
+
+#tuned to OM-ref, 216 reps, tuning level3
+IT5.15.216.t3 <- function(x,pset,yrsmth=5,lambda=0.4,xx=0.2, deltaTACLimUp=0.15, deltaTACLimDown=0.15){
+  return(CPUETarget(x,pset, ITargPars=c(3.1349248,deltaTACLimUp,deltaTACLimDown,0.2,0.1,0.1,0.1,0.1), yrsmth=yrsmth,lambda=lambda,xx=xx))
+}
+class(IT5.15.216.t3) <- "IO_MP"
+
+
+
+
+
+#non-tuning
 IT1.00 <- function(x,pset,yrsmth=5,lambda=0.4,xx=0.2){
   return(CPUETarget(x,pset, ITargPars=c(1.0,0.2,0.2,0.1,0.1,0.1,0.1), yrsmth=yrsmth,lambda=lambda,xx=xx))
 }
@@ -138,7 +212,8 @@ class(IT3.50)<-"IO_MP"
 MP_FunctionExports <- c(MP_FunctionExports, "PellaTomlinson4010")
 
 # Pella Tomlinson Production model with generic 40-10 type rule - MPs are defined with tuning parameters above
-PellaTomlinson4010<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0, deltaTACLimUp=0.9, deltaTACLimDown=0.9){
+# useF option uses the 40:10 rule for F rather than C, in which case FMax = FMSY*CMaxProp
+PellaTomlinson4010<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0, deltaTACLimUp=0.9, deltaTACLimDown=0.9, useF=F){
   isim   <- x
   C_hist <- pset$Cobs[isim,]
   I_hist <- pset$Iobs[isim,]
@@ -163,18 +238,36 @@ PellaTomlinson4010<-function(x,pset, BLower=0.1,BUpper=0.4,CMaxProp=1.0, deltaTA
   d <- PT.f(params=opt$par, returnOpt=2, C_hist=C_hist, I_hist=I_hist, CMCsum=CMCsum, p=p, doPlot=F)
   lastTAC <- pset$prevTACE[isim,ncol(pset$prevTACE)]
 
-  #Apply something like a 40-10 rule
-  if(d["BY"]/d["K"] <= BLower)                        newTAC <- 1.    #i.e. shutdown fishery
-  if(d["BY"]/d["K"] >  BLower & d["BY"]/d["K"] <= BUpper) newTAC <- CMaxProp*d["MSY"]*(d["BY"]/d["K"])/(BUpper-BLower) + CMaxProp*d["MSY"]*( 1 - (BUpper/(BUpper-BLower)))
-  if(d["BY"]/d["K"] >  BUpper)                         newTAC <- CMaxProp*d["MSY"]
+  #Apply something like a 40-10 rule for catch relative to MSY
+  if(useF==F){
+    if(d["BY"]/d["K"] <= BLower)                        newTAC <- 1.    #i.e. shutdown fishery
+    if(d["BY"]/d["K"] >  BLower & d["BY"]/d["K"] <= BUpper) newTAC <- CMaxProp*d["MSY"]*(d["BY"]/d["K"])/(BUpper-BLower) + CMaxProp*d["MSY"]*( 1 - (BUpper/(BUpper-BLower)))
+    if(d["BY"]/d["K"] >  BUpper)                         newTAC <- CMaxProp*d["MSY"]
+  }
+  #Apply the 40:10 rule to F rather than catch...
+  if(useF){
+    FMSY = -log(1-d["MSY"]/d["K"])
+    FMult = CMaxProp # maximum F relative to FMSY
+    if(d["BY"]/d["K"] <= BLower)   TACF <- 0.0001    #i.e. shutdown fishery
+    if(d["BY"]/d["K"] >  BLower & d["BY"]/d["K"] <= BUpper) TACF <- FMult*FMSY*(d["BY"]/d["K"])/(BUpper-BLower) + FMult*FMSY*( 1 - (BUpper/(BUpper-BLower)))
+    if(d["BY"]/d["K"] >  BUpper)   TACF <- FMult*FMSY
+    newTAC <-  d["BY"]*(1-exp(-TACF))
+  }
+
+
+
+
   names(newTAC) <- "TAC"
 
   deltaTAC <- newTAC/lastTAC - 1
+
+#print(deltaTAC)
   if(deltaTAC >  deltaTACLimUp)   deltaTAC =  deltaTACLimUp
   if(deltaTAC < -deltaTACLimDown) deltaTAC = -deltaTACLimDown
   newTAC <- lastTAC*(1+deltaTAC)
   if(newTAC<9) newTAC <- 9 #shut the fishery down, except collect some data
-
+#print(deltaTAC)
+#browser()
   TAEbyF <- 0.*pset$prevTACE[isim,1:(ncol(pset$prevTACE)-1)]          #TAE by fishery
   TACE   <- c(TAEbyF,newTAC)
 
@@ -247,7 +340,7 @@ CPUETarget <- function(x,pset, ITargPars=c(2.5,0.2,0.2,0.1,0.1,0.1,0.1), yrsmth=
   isim <- x          # simulation number
   ny<-length(pset$Cobs[isim,])  #number years of data
   ind<-(ny-(yrsmth-1)):ny
-  I_hist<-pset$Iobs[isim,ind]   #historical Abiudnance index
+  I_hist<-pset$Iobs[isim,ind]   #historical Abundance index
   yind<-1:yrsmth
   slppar<-summary(lm(I_hist~yind))$coefficients[2,1:2]   #slope of recent index
   Islp <-slppar[1]
@@ -288,7 +381,45 @@ CPUETarget <- function(x,pset, ITargPars=c(2.5,0.2,0.2,0.1,0.1,0.1,0.1), yrsmth=
 
 # constant catch projections
 #===============================================================================
+#for tuning
+CCt <- function(x,pset,Cinit=400000){ # fishing moratorium (except a bit of data collection
+  isim <- x
 
+  TAC <- Cinit*pset$tune #aggregate TAC (annual) by fishery
+  TAEbyF <- 0.*pset$prevTACE[isim,1:(ncol(pset$prevTACE)-1)]          #TAE by fishery
+
+  TACE <- c(TAEbyF,TAC)
+  return(TACE)
+}
+class(CCt)<-"IO_MP_tune"
+
+#tuned to OM-ref, 216 reps, tuning level1
+CCt.216.t1 <- function(x,pset){
+  isim <- x
+
+  TAC <- 400000*1.4251754 #aggregate TAC (annual) by fishery
+  TAEbyF <- 0.*pset$prevTACE[isim,1:(ncol(pset$prevTACE)-1)]          #TAE by fishery
+
+  TACE <- c(TAEbyF,TAC)
+  return(TACE)
+}
+class(CCt.216.t1)<-"IO_MP"
+
+#tuned to OM-ref, 216 reps, tuning level3
+CCt.216.t3 <- function(x,pset){
+  isim <- x
+
+  TAC <- 400000*0.8792413 #aggregate TAC (annual) by fishery
+  TAEbyF <- 0.*pset$prevTACE[isim,1:(ncol(pset$prevTACE)-1)]          #TAE by fishery
+
+  TACE <- c(TAEbyF,TAC)
+  return(TACE)
+}
+class(CCt.216.t3)<-"IO_MP"
+
+
+
+#non-tuning
 CC001 <- function(x,pset){ # fishing moratorium (except a bit of data collection
   isim <- x
 
