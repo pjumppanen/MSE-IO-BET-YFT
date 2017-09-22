@@ -26,9 +26,6 @@ getperf <- function(object)
 }
 
 
-
-
-
 #DK modified summary for MWG statistics
 tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, nsimSub=NA)
 {
@@ -142,28 +139,112 @@ tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, 
                              apply(YcvPct,MARGIN=1,mean),       t(apply(YcvPct,MARGIN=1,quantile, probs=percentiles,na.rm=T)),
                              apply(PrYlt0.1MSY,MARGIN=1,mean),  t(apply(PrYlt0.1MSY,MARGIN=1,quantile, probs=percentiles))))
 
+    colnames <- c("SBoSB0" %&% c("mean",percentiles),
+                  "minSBoSB0" %&% c("mean",percentiles),
+                  "SBoSBMSY" %&% c("mean",percentiles),
+                  "FoFMSY" %&% c("mean",percentiles),
+                  "FoFtarg" %&% c("mean",percentiles),
+                  "GK" %&% c("mean",percentiles),
+                  "RK" %&% c("mean",percentiles),
+                  "PrSBgt0.2SB0" %&% c("mean",percentiles),
+                  "PrSBgtSBlim" %&% c("mean",percentiles),
+                  # Y by area/fishery
+                  "Y" %&% c("mean",percentiles),
+                  "relCPUE" %&% c("mean",percentiles),
+                  # CPUE by area/fishery
+                  "YoMSY" %&% c("mean",percentiles),
+                  "APCY" %&% c("mean",percentiles),
+                  "YcvPct" %&% c("mean",percentiles),
+                  "PrYlt0.1MSY" %&% c("mean",percentiles))
+
+    if (any(is.na(nsimSub)))
+    {
+      sub_names <- (if (length(MSEobj@t_names) == 0) c("h_", "M_", "q_") else c("h_", "M_", "t_", "q_"))
+
+      for (sub_name in sub_names)
+      {
+        sub_factor      <- factor(as.array(slot(MSEobj, paste(sub_name, "idx", sep=""))))
+        factors         <- list(sub_factor)
+        dim_mean        <- c(length(levels(sub_factor)), 1)
+        dim_percentiles <- c(length(percentiles), length(levels(sub_factor)))
+
+        ExtraResults <- NULL
+
+        for (MP in MPs)
+        {
+          resultsByFactor <- data.frame(cbind(array(tapply(SBoSB0[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(SBoSB0[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(minSBoSB0[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(minSBoSB0[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(SBoSBMSY[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(SBoSBMSY[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(FoFMSY[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(FoFMSY[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(FoFtarg[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(FoFtarg[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(GK[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(GK[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(RK[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(RK[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(PrSBgt0.2SB0[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(PrSBgt0.2SB0[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(PrSBgtSBlim[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(PrSBgtSBlim[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(Y[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(Y[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(relCPUE[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(relCPUE[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(YoMSY[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(YoMSY[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(APCY[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(APCY[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles)),
+                                              array(tapply(YcvPct[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(YcvPct[MP,], factors, quantile, probs=percentiles, names=FALSE, na.rm=T)), dim=dim_percentiles)),
+                                              array(tapply(PrYlt0.1MSY[MP,], factors, mean), dim=dim_mean), t(array(unlist(tapply(PrYlt0.1MSY[MP,], factors, quantile, probs=percentiles, names=FALSE)), dim=dim_percentiles))))
+
+          # results are organised one row per factor. Need to unwrap multiple rows into one.
+          unwrapped <- NULL
+          first     <- TRUE
+
+          for (row_name in levels(sub_factor))
+          {
+            if (first)
+            {
+              unwrapped <- cbind(resultsByFactor[row_name,])
+              first     <- FALSE
+            }
+            else
+            {
+              unwrapped <- cbind(unwrapped, resultsByFactor[row_name,])
+            }
+          }
+
+          rownames(unwrapped) <- paste(MSEobj@MPs[MP],"y",pp,sep="")
+          colnames(unwrapped) <- "x" %&% seq(1, dim_mean[1] * 15 * (1 + dim_percentiles[1]))
+
+          ExtraResults <- rbind(data.frame(ExtraResults), unwrapped)
+        }
+
+        for (stat_name  in names(slot(MSEobj, paste(sub_name, "names", sep=""))))
+        {
+          colnames <- c(colnames,
+                        "SBoSB0" %&% stat_name %&% c("mean",percentiles),
+                        "minSBoSB0" %&% stat_name %&% c("mean",percentiles),
+                        "SBoSBMSY" %&% stat_name %&% c("mean",percentiles),
+                        "FoFMSY" %&% stat_name %&% c("mean",percentiles),
+                        "FoFtarg" %&% stat_name %&% c("mean",percentiles),
+                        "GK" %&% stat_name %&% c("mean",percentiles),
+                        "RK" %&% stat_name %&% c("mean",percentiles),
+                        "PrSBgt0.2SB0" %&% stat_name %&% c("mean",percentiles),
+                        "PrSBgtSBlim" %&% stat_name %&% c("mean",percentiles),
+                        # Y by area/fishery
+                        "Y" %&% stat_name %&% c("mean",percentiles),
+                        "relCPUE" %&% stat_name %&% c("mean",percentiles),
+                        # CPUE by area/fishery
+                        "YoMSY" %&% stat_name %&% c("mean",percentiles),
+                        "APCY" %&% stat_name %&% c("mean",percentiles),
+                        "YcvPct" %&% stat_name %&% c("mean",percentiles),
+                        "PrYlt0.1MSY" %&% stat_name %&% c("mean",percentiles)
+                        )
+          }
+
+        temp <- cbind(temp, ExtraResults)
+      }
+    }
+
     rownames(temp) <- paste(MSEobj@MPs[MPs],"y",pp,sep="")
+    colnames(temp) <- colnames
 
     stats <- rbind(data.frame(stats), temp)
   } #pp
 
-  colnames(stats) <- c("SBoSB0" %&% c("mean",percentiles),
-                       "minSBoSB0" %&% c("mean",percentiles),
-                       "SBoSBMSY" %&% c("mean",percentiles),
-                       "FoFMSY" %&% c("mean",percentiles),
-                       "FoFtarg" %&% c("mean",percentiles),
-                       "GK" %&% c("mean",percentiles),
-                       "RK" %&% c("mean",percentiles),
-                       "PrSBgt0.2SB0" %&% c("mean",percentiles),
-                       "PrSBgtSBlim" %&% c("mean",percentiles),
-                       # Y by area/fishery
-                       "Y" %&% c("mean",percentiles),
-                       "relCPUE" %&% c("mean",percentiles),
-                       # CPUE by area/fishery
-                       "YoMSY" %&% c("mean",percentiles),
-                       "APCY" %&% c("mean",percentiles),
-                       "YcvPct" %&% c("mean",percentiles),
-                       "PrYlt0.1MSY" %&% c("mean",percentiles))
+  colnames(stats) <- colnames
 
   return(stats)
 }

@@ -1173,7 +1173,19 @@ setClass("MSE",representation(
                TACTime          = "numeric",
                rULim            = "numeric",
 
-                # Dimensions
+               # Attributes needed to decode performance data based on model parameter
+               sp_names         = "list",   # model type (1 regions, 1 population, no mixing) model name
+               h_names          = "list",   # SR steepness model name
+               M_names          = "list",   # mortality model name
+               t_names          = "list",   # tag weight model name
+               q_names          = "list",   # longline catchability model name
+               sp_idx           = "karray", # array of sp_names indices length nsim
+               h_idx            = "karray", # array of h_names indices length nsim
+               M_idx            = "karray", # array of M_names indices length nsim
+               t_idx            = "karray", # array of t_names indices length nsim
+               q_idx            = "karray", # array of q_names indices length nsim
+
+               # Dimensions
                nsim             = "integer",
                npop             = "integer",
                nages            = "integer",
@@ -2139,6 +2151,113 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 }
 
 
+
+initModelParameterVariables <- function(OMList, nsimPerOMFile)
+{
+  nsim <- sum(nsimPerOMFile)
+
+  sp_names <- list()
+  h_names  <- list()
+  M_names  <- list()
+  t_names  <- list()
+  q_names  <- list()
+
+  sp_idx <- karray(NA, c(nsim))
+  h_idx  <- karray(NA, c(nsim))
+  M_idx  <- karray(NA, c(nsim))
+  t_idx  <- karray(NA, c(nsim))
+  q_idx  <- karray(NA, c(nsim))
+
+  nsim_start <- 1
+  nsim_end   <- 0
+
+  for (cm in 1:length(OMList))
+  {
+    grid_name <- OMList[[cm]]
+    re        <- regexec("([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)", grid_name)
+
+    if ((length(re[[1]]) == 1) && (re[[1]][1] == -1))
+    {
+      re <- regexec("([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)", grid_name)
+    }
+
+    if ((length(re) == 1) && (length(re[[1]]) >= 5))
+    {
+      if (length(re[[1]]) == 5)
+      {
+        sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
+        h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
+        M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
+        q_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
+        t_name  <- NA
+
+      } else
+      {
+        sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
+        h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
+        M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
+        t_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
+        q_name  <- substr(grid_name, re[[1]][6], re[[1]][6] + attr(re[[1]], "match.length")[6] - 1)
+      }
+
+      if (!(sp_name %in% names(sp_names)))
+      {
+        sp_names[[sp_name]] <- length(sp_names) + 1
+      }
+
+      if (!(h_name %in% names(h_names)))
+      {
+        h_names[[h_name]] <- length(h_names) + 1
+      }
+
+      if (!(M_name %in% names(M_names)))
+      {
+        M_names[[M_name]] <- length(M_names) + 1
+      }
+
+      if (!is.na(t_name) && !(t_name %in% names(t_names)))
+      {
+        t_names[[t_name]] <- length(t_names) + 1
+      }
+
+      if (!(q_name %in% names(q_names)))
+      {
+        q_names[[q_name]] <- length(q_names) + 1
+      }
+
+      nsim_start <- nsim_end + 1
+      nsim_end   <- nsim_start + nsimPerOMFile[cm] - 1
+
+      sp_idx[nsim_start:nsim_end] <- rep(sp_names[[sp_name]], times = nsimPerOMFile[cm])
+      h_idx[nsim_start:nsim_end]  <- rep(h_names[[h_name]], times = nsimPerOMFile[cm])
+      M_idx[nsim_start:nsim_end]  <- rep(M_names[[M_name]], times = nsimPerOMFile[cm])
+      q_idx[nsim_start:nsim_end]  <- rep(q_names[[q_name]], times = nsimPerOMFile[cm])
+
+      if (!is.na(t_name))
+      {
+        t_idx[nsim_start:nsim_end] <- rep(t_names[[t_name]], times = nsimPerOMFile[cm])
+      }
+
+    } else
+    {
+      stop(paste("Cannot parse grid name", grid_name, "into components"))
+    }
+  }
+
+  return (list(sp_names = sp_names,
+               h_names  = h_names,
+               M_names  = M_names,
+               t_names  = t_names,
+               q_names  = q_names,
+               sp_idx   = sp_idx,
+               h_idx    = h_idx,
+               M_idx    = M_idx,
+               t_idx    = t_idx,
+               q_idx    = q_idx))
+}
+
+
+
 setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, CppMethod=NA, UseCluster=NA, EffortCeiling = as.double(20.0), TACTime = 0.5, rULim=0.5)
 {
   if (class(OM) != 'OMss')
@@ -2191,6 +2310,19 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
   .Object@F_FMSYss      <- OM@F_FMSYss
   .Object@UseCluster    <- OM@UseCluster
   .Object@OMid          <- OM@OMid
+
+  ParamVars <- initModelParameterVariables(OM@OMList, OM@nsimPerOMFile)
+
+  .Object@sp_names <- ParamVars$sp_names
+  .Object@h_names  <- ParamVars$h_names
+  .Object@M_names  <- ParamVars$M_names
+  .Object@t_names  <- ParamVars$t_names
+  .Object@q_names  <- ParamVars$q_names
+  .Object@sp_idx   <- ParamVars$sp_idx
+  .Object@h_idx    <- ParamVars$h_idx
+  .Object@M_idx    <- ParamVars$M_idx
+  .Object@t_idx    <- ParamVars$t_idx
+  .Object@q_idx    <- ParamVars$q_idx
 
   if(!is.na(UseCluster)) OM@UseCluster <- UseCluster
 
@@ -2422,7 +2554,6 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
     firstSim  <- lastSim + 1
     lastSim   <- firstSim + nsim - 1
     projSims  <- firstSim:lastSim
-    tune      <- rep(1.0, times=length(MPs))
 
     .Object   <- runProjection(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, interval, Report, CppMethod, UseCluster, EffortCeiling, TACTime, rULim, .Object@tune)
 

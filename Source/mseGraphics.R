@@ -17,8 +17,10 @@ library(reshape2)
 
 #Confidence interval plots (double whisker aka udon-soba plots).
 # median, thick confidence interval whiskers for the 25-75th percentiles, and thin whiskers indicating 10-90th percentiles
-plotUS.f <- function(mseObj, MPs=c("CE1.0n","CC400n","ITarg2.50","PT4010.1.0"), plotStats="def")
+plotUS.f <- function(mseObj, MPs=c("CE1.0n","CC400n","ITarg2.50","PT4010.1.0"), plotStats="def", param="")
 {
+  suffix <- if (nchar(param) > 0) "(" %&% param %&% ")" else ""
+
   fullPIList <- c('SBoSB0',
                   'minSBoSB0',
                   'SBoSBMSY',
@@ -53,13 +55,13 @@ plotUS.f <- function(mseObj, MPs=c("CE1.0n","CC400n","ITarg2.50","PT4010.1.0"), 
 
   if (plotStats == 'def')
   {
-    PIList <- fullPIList
-    PILabels <- fullPILabels
+    PIList <- fullPIList %&% param
+    PILabels <- fullPILabels %&% suffix
   }
   else
   {
-    PIList <- plotStats
-    PILabels <- fullPILabels[fullPIList %in% plotStats]
+    PIList <- plotStats %&% param
+    PILabels <- fullPILabels[fullPIList %in% plotStats] %&% suffix
   }
 
   ms <- tableMSE.f(mseObj)
@@ -107,20 +109,23 @@ plotUS.f <- function(mseObj, MPs=c("CE1.0n","CC400n","ITarg2.50","PT4010.1.0"), 
 # 2. Pr(Green Kobe) vs. Yield
 # 3. Pr(SB > BLim) vs. Yield
 # 4. mean(1 – Cy/Cy-1) vs. Yield
-plotTO.f <- function(mseObj=MSEList, MPs=MPList, ylims='def', xlims='def')
+plotTO.f <- function(mseObj=MSEList, MPs=MPList, ylims='def', xlims='def', param='')
 {
   numOMs <- length(mseObj)
   ms <- tableMSE.f(mseObj[[1]])
 
-  y <- c("SBoSBMSY","GK","PrSBgtSBlim","APCY")
+  suffix <- if (nchar(param) > 0) "(" %&% param %&% ")" else ""
+  y <- c("SBoSBMSY","GK","PrSBgtSBlim","APCY") %&% param
   ylabs  <- c("SB / SB(MSY)","Probability","Probability","mean(|1-C(y)/C(y-1|)")
-  titles <- c("Spawning Biomass","Prob. in Green Kobe Quad.","Prob. SB > SB(limit)","Mean Change in Yield ratio")
+  titles <- c("Spawning Biomass","Prob. in Green Kobe Quad.","Prob. SB > SB(limit)","Mean Change in Yield ratio") %&% suffix
 
-  if(ylims=='def') ylims <- c(4,1,1,10)
+  if (ylims=='def') ylims <- c(4,1,1,10)
 
-  x <- rep("Y",length(y))
+  x <- rep("Y" %&% param, length(y))
 
-  if(xlims=='def') xlims <- rep(max(ms$"Y0.9"),length(x))
+  sel <- "Y" %&% param %&% "0.9"
+
+  if (xlims=='def') xlims <- rep(max(ms[[sel]]),length(x))
 
   t <- c(10,20) #summary periods (years)
 
@@ -134,11 +139,11 @@ plotTO.f <- function(mseObj=MSEList, MPs=MPList, ylims='def', xlims='def')
     {
       if (numOMs==1)
       {
-        mainTitle <- titles[paneli] %&% " over " %&% ti %&% " y \n" %&% 'OM ' %&% mseObj[[1]]@Label
+        mainTitle <- titles[paneli] %&% " over " %&% ti %&% " y" %&% suffix %&% " \n" %&% 'OM ' %&% mseObj[[1]]@Label
       }
       else
       {
-        mainTitle <- titles[paneli] %&% " over " %&% ti %&% " y"
+        mainTitle <- titles[paneli] %&% " over " %&% ti %&% " y" %&% suffix
       }
 
       plot(ms[MPs[1] %&% "y" %&% ti, x[paneli] %&% "0.5"], ms[MPs[1] %&% "y" %&% ti,y[paneli] %&% "0.5"],type="n",
@@ -211,8 +216,37 @@ plotTO.f <- function(mseObj=MSEList, MPs=MPList, ylims='def', xlims='def')
 
 
 # wrapper to provide labels etc.
-plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), plotByRF=T, mwgPlots=F)
+plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), plotByRF=T, mwgPlots=F, param="")
 {
+  suffix <- ""
+  nSims  <- 1:mseObj@nsim
+
+  if (nchar(param) > 0)
+  {
+    if (!is.null(mseObj@sp_names[[param]]))
+    {
+      nSims <- which(mseObj@sp_idx == mseObj@sp_names[[param]])
+    }
+    else if (!is.null(mseObj@h_names[[param]]))
+    {
+      nSims <- which(mseObj@h_idx == mseObj@h_names[[param]])
+    }
+    else if (!is.null(mseObj@M_names[[param]]))
+    {
+      nSims <- which(mseObj@M_idx == mseObj@M_names[[param]])
+    }
+    else if (!is.null(mseObj@t_names[[param]]))
+    {
+      nSims <- which(mseObj@t_idx == mseObj@t_names[[param]])
+    }
+    else if (!is.null(mseObj@q_names[[param]]))
+    {
+      nSims <- which(mseObj@q_idx == mseObj@q_names[[param]])
+    }
+
+    suffix <- "(" %&% param %&% ")"
+  }
+
   par(mfrow=c(5,1))
 
   for (iMP in 1:mseObj@nMPs)
@@ -220,7 +254,7 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
     projRefLine <- c(mseObj@lastCalendarYr, mseObj@firstMPYr) # + 1
 
     #SSB/SSBMSY (includes finding reference worms)
-    rawPlotDat <- mseObj@SSB_SSBMSY[iMP,,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@SSB_SSBMSY[iMP,nSims,] #nMPs,nsim,years
     plotDat <- as.data.frame(array(NA, dim=c(prod(dim(rawPlotDat)),3)))
     names(plotDat) <- c("year","iter","data")
     plotDat$year <- rep(mseObj@yrLabels, each  = dim(rawPlotDat)[1]) #nyears, nsim
@@ -242,11 +276,11 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
     }
 
     #SSB/SSBMSY
-    p2b <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": SSB/SSBMSY", xlab="", ylab="SSB/SSBMSY",xref=projRefLine,yreflim=mseObj@SBlim,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
+    p2b <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": SSB/SSBMSY" %&% suffix, xlab="", ylab="SSB/SSBMSY",xref=projRefLine,yreflim=mseObj@SBlim,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
     plot(p2b)
 
     #aggregate CPUE series skips final year
-    rawPlotDat <- mseObj@IobsArchive[iMP,,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@IobsArchive[iMP,nSims,] #nMPs,nsim,years
     plotDat <- as.data.frame(array(NA, dim=c(prod(dim(rawPlotDat)),3)))
     names(plotDat) <- c("year","iter","data")
     #plotDat$year <- rep(1:dim(rawPlotDat)[2], each  = dim(rawPlotDat)[1]) #nyears, nsim
@@ -254,10 +288,10 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
     plotDat$year <- rep(mseObj@yrLabels, each  = dim(rawPlotDat)[1]) #nyears, nsim
     plotDat$iter <- rep(1:dim(rawPlotDat)[1], times = dim(rawPlotDat)[2]) #nsim nyears
     plotDat$data <- as.vector(rawPlotDat)
-    p6 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": CPUE (aggregate)", xlab="Year", ylab="CPUE",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims)
+    p6 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": CPUE (aggregate)" %&% suffix, xlab="Year", ylab="CPUE",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims)
     #plot(p6)
 
-    rawPlotDat <- mseObj@Rec[iMP,,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@Rec[iMP,nSims,] #nMPs,nsim,years
     plotDat <- as.data.frame(array(NA, dim=c(prod(dim(rawPlotDat)),3)))
     names(plotDat) <- c("year","iter","data")
 #    plotDat$year <- rep(1:dim(rawPlotDat)[2], each  = dim(rawPlotDat)[1]) #nyears, nsim
@@ -267,47 +301,47 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
 
     #Rec
     plotDat$data <- as.vector(rawPlotDat)/1E+3
-    p1 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": Recruitment", xlab="", ylab="Millions",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
+    p1 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": Recruitment" %&% suffix, xlab="", ylab="Millions",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
     #plot(p1)
 
     #B/B0
-    rawPlotDat <- mseObj@B_B0[iMP,,1,] #nMPs,nsim,npop,years
+    rawPlotDat <- mseObj@B_B0[iMP,nSims,1,] #nMPs,nsim,npop,years
     plotDat$data <- as.vector(rawPlotDat)
-    p2 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": B/B0", xlab="", ylab="B/B0",xref=projRefLine, ,yreflim=0.2, doWorms=doWorms, wormSims=wormSims)
+    p2 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": B/B0" %&% suffix, xlab="", ylab="B/B0",xref=projRefLine, ,yreflim=0.2, doWorms=doWorms, wormSims=wormSims)
 
     #B/BMSY
-    rawPlotDat <- mseObj@B_BMSY[iMP,,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@B_BMSY[iMP,nSims,] #nMPs,nsim,years
     plotDat$data <- as.vector(rawPlotDat)
-    p2.2 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": B/BMSY", xlab="", ylab="B/BMSY",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
+    p2.2 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": B/BMSY" %&% suffix, xlab="", ylab="B/BMSY",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
 
     #SSB/SSB0
-    rawPlotDat <- mseObj@SSB_SSB0[iMP,,1,] #nMPs,nsim,npop,years
+    rawPlotDat <- mseObj@SSB_SSB0[iMP,nSims,1,] #nMPs,nsim,npop,years
     plotDat$data <- as.vector(rawPlotDat)
-    p2.1 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": SSB/SSB0", xlab="", ylab="SSB/SSB0",xref=projRefLine, ,yreflim=0.2, doWorms=doWorms, wormSims=wormSims)
+    p2.1 <- plotStock.f(plotDat, main="MP " %&%mseObj@MPs[iMP]  %&%": SSB/SSB0" %&% suffix, xlab="", ylab="SSB/SSB0",xref=projRefLine, ,yreflim=0.2, doWorms=doWorms, wormSims=wormSims)
 
     #SSB/SSBMSY
-    #rawPlotDat <- mseObj@SSB_SSBMSY[iMP,,] #nMPs,nsim,years
+    #rawPlotDat <- mseObj@SSB_SSBMSY[iMP,nSims,] #nMPs,nsim,years
     #plotDat$data <- as.vector(rawPlotDat)
-    #p2b <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": SSB/SSBMSY", xlab="", ylab="SSB/SSBMSY",xref=projRefLine,yreflim=0.4,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
+    #p2b <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": SSB/SSBMSY" %&% suffix, xlab="", ylab="SSB/SSBMSY",xref=projRefLine,yreflim=0.4,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
     #plot(p2b)
 
     #F/FMSY
-    rawPlotDat <- mseObj@F_FMSY[iMP,,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@F_FMSY[iMP,nSims,] #nMPs,nsim,years
     rawPlotDat[rawPlotDat>5] <- 5
     plotDat$data <- as.vector(rawPlotDat)
-    p3 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": F/FMSY", xlab="", ylab="F/FMSY",xref=projRefLine,yreflim=mseObj@Flim,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
+    p3 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": F/FMSY" %&% suffix, xlab="", ylab="F/FMSY",xref=projRefLine,yreflim=mseObj@Flim,yreftarget=1., doWorms=doWorms, wormSims=wormSims)
     #plot(p3)
 
     #Catch
-    rawPlotDat <- mseObj@CM[iMP,,1,] #nMPs,nsim,years
+    rawPlotDat <- mseObj@CM[iMP,nSims,1,] #nMPs,nsim,years
     plotDat$data <- as.vector(rawPlotDat)/1000
-    p4 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": Catch", xlab="Year", ylab="1000 t",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
+    p4 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": Catch" %&% suffix, xlab="Year", ylab="1000 t",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
     #plot(p4)
 
     #multiplot(p1, p2, p3, p4, cols=1)
 
     # Rec by Qtr
-    qPlotDat <- mseObj@RecYrQtr[iMP,,] #nMPs,nsim,years
+    qPlotDat <- mseObj@RecYrQtr[iMP,nSims,] #nMPs,nsim,years
     plotDat <- as.data.frame(array(NA, dim=c(prod(dim(qPlotDat)),3)))
     names(plotDat) <- c("year","iter","data")
     #plotDat$year <- rep(1:dim(qPlotDat)[2], each  = dim(qPlotDat)[1])
@@ -315,7 +349,7 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
     plotDat$year <- rep(mseObj@yrSeasLabels, each  = dim(rawPlotDat)[1]) #nyears, nsim
     plotDat$iter <- rep(1:dim(qPlotDat)[1], times = dim(qPlotDat)[2]) #nsim nyears*nsubyears
     plotDat$data <- as.vector(qPlotDat)/1E+3
-    p5 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": Recruitment", xlab="", ylab="Millions",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
+    p5 <- plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&% ": Recruitment" %&% suffix, xlab="", ylab="Millions",xref=projRefLine, doWorms=doWorms, wormSims=wormSims)
     #plot(p5)
 
     if (mwgPlots)
@@ -338,14 +372,14 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
 
         for (fi in 1:mseObj@nfleets)
         {
-          rawPlotDat <- mseObj@CMbyF[iMP,,mseObj@targpop,,fi] #nMPs,nsim,years
+          rawPlotDat <- mseObj@CMbyF[iMP,nSims,mseObj@targpop,,fi] #nMPs,nsim,years
           plotDat$data <- as.vector(rawPlotDat)
           names(plotDat) <- c("year","iter","data")
           plotDat$year <- rep(mseObj@yrLabels, each  = dim(rawPlotDat)[1]) #nyears, nsim
           plotDat$iter <- rep(1:dim(rawPlotDat)[1], times = dim(rawPlotDat)[2]) #nsim nyears
           plotDat$data <- as.vector(rawPlotDat)
           pName <- "pCF" %&% fi
-          assign(pName, plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": Catch " %&% "F" %&% fi, xlab="Year", ylab="Catch",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims))
+          assign(pName, plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": Catch " %&% "F" %&% fi %&% suffix, xlab="Year", ylab="Catch",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims))
           #plot(get(pName))
           pCFList[[paneli]] <- get(pName)
 
@@ -367,14 +401,14 @@ plotTS.f <- function (mseObj = tmse, doWorms=T, wormProbs=c(0.25, 0.50, 0.75), p
 
         for (ri in 1:mseObj@nareas)
         {
-          rawPlotDat <- mseObj@IobsRArchive[iMP,,,ri] #nMPs,nsim,years
+          rawPlotDat <- mseObj@IobsRArchive[iMP,nSims,,ri] #nMPs,nsim,years
           plotDat$data <- as.vector(rawPlotDat)
           names(plotDat) <- c("year","iter","data")
           plotDat$year <- rep(mseObj@yrLabels, each  = dim(rawPlotDat)[1]) #nyears, nsim
           plotDat$iter <- rep(1:dim(rawPlotDat)[1], times = dim(rawPlotDat)[2]) #nsim nyears
           plotDat$data <- as.vector(rawPlotDat)
           pName <- "pIR" %&% ri
-          assign(pName, plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": CPUE " %&% "R" %&% ri, xlab="Year", ylab="CPUE",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims))
+          assign(pName, plotStock.f(plotDat, main="MP " %&% mseObj@MPs[iMP]  %&%": CPUE " %&% "R" %&% ri %&% suffix, xlab="Year", ylab="CPUE",xref=projRefLine, yref=0, doWorms=doWorms, wormSims=wormSims))
           #plot(get(pName))
           pIRList[[ri]] <- get(pName)
         }
