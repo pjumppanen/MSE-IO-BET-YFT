@@ -35,6 +35,7 @@ setClass("OMd",representation(
                UseCluster       = "numeric",
 
                nfleets          = "integer",
+               RecScale         = "karray",
                ReccvTin         = "karray",
                RecACTin         = "karray",
                ReccvRin         = "numeric",
@@ -99,7 +100,8 @@ setClass("OMd",representation(
              ),
              prototype = list(
                tuneTol       = 0.01,
-               tuneLogDomain = c(-3,0.5)
+               tuneLogDomain = c(-3,0.5),
+               RecScale      = karray(c(1))
              )
 )
 
@@ -192,13 +194,9 @@ setClass("OMss",representation(
               SSBcur          = "karray",  # Current stock abundance
               Size_area       = "karray",  # Size of regions
               mov             = "karray",  # Markov movement matrix for all fish
-              Mmov            = "karray",  # Markov movement matrix for mature fish
               movvar          = "karray",  # Inter-simulation variability in movement
               movsd           = "karray",  # Interannual-variability in movement
               movgrad         = "karray",  # Gradient changes in area gravity weights
-              Mmovvar         = "karray",  # Inter-simulation variability in mature movement
-              Mmovsd          = "karray",  # Interannual-variability in mature movement
-              Mmovgrad        = "karray",  # Gradient changes in area gravity weights
               excl            = "karray",  # Exclusion matrix [0,1] depending on whether the stock can go there
               nfleets         = "integer", # Number of fleets,
               nCPUE           = "integer", # Number of CPUE series,
@@ -512,7 +510,6 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       .Object@selTSSign    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
       .Object@selTSWaveLen <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
       .Object@mov          <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas)) # Initialise to 1 because C++ model requires valid mov
-      .Object@Mmov         <- karray(as.double(0.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas))
       .Object@Idist        <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nareas)) # Initialise to 1 because C++ model requires valid Idist
       .Object@R0           <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
       .Object@Css          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears,.Object@nfleets))      # Catch numbers
@@ -639,7 +636,28 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       rndDevs[,,t] <- RecACT[keep(firstSimNum:lastSimNum),] * rndDevs[,,t-1] + rndDevs[,,t] * sqrt(1 - RecACT[keep(firstSimNum:lastSimNum),] ^ 2)
     }
 
-    .Object@Recdevs[firstSimNum:lastSimNum,,] <- exp(rndDevs[,,] - 0.5 * .Object@ReccvT[keep(firstSimNum:lastSimNum)] ^ 2)
+    # We attach any recruitment scaling (recuitment shock implementation) to the recruitment deviates.
+    SPTm  <- as.matrix(expand.grid(firstSimNum:lastSimNum, 1:.Object@npop, 1:(allyears * length(.Object@Recsubyr))))
+    S     <- SPTm[,c(1)]
+    PTm   <- SPTm[,c(2,3)]
+    Y     <- floor((SPTm[,c(3)] - 1) / length(.Object@Recsubyr)) + 1  # Calculate year from timestep
+    SPTm2 <- SPTm
+    SPTm2[,1] <- SPTm2[,1] - (firstSimNum - 1)
+
+    if (length(OMd@RecScale) == 1)
+    {
+      .Object@Recdevs[SPTm] <- exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
+    }
+    else if (length(OMd@RecScale) == OMd@proyears)
+    {
+      RecScale              <- karray(c(rep(1.0, times=.Object@nyears), OMd@RecScale))
+      .Object@Recdevs[SPTm] <- RecScale[Y] * exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
+    }
+    else
+    {
+      print("Error: model definition RecScale vector is wrong length. It must be nyears in length")
+      stop()
+    }
 
     #Len_age relationships
     #nColOffset <- 4
