@@ -433,8 +433,6 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
   MSY_projection_sims <- karray(NA,dim=c(nOMfiles,2))
 
-  browser()
-
   # Check if we are using model plausibility weighting
   if (length(OMd@modelWeight) == 1)
   {
