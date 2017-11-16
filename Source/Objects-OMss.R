@@ -14,7 +14,7 @@ setClass("OMd",representation(
 
                # Description
                Name             = "character",
-               Label             = "character",
+               Label            = "character",
                Date             = "character",
                Author           = "character",
                Notes            = "character",
@@ -31,6 +31,8 @@ setClass("OMd",representation(
                Flim             = "numeric",
                OMList           = "list",
                nsimPerOMFile    = "karray",
+               modelWeight      = "karray",    # Plausibility weighting for given OMFile
+               totalSims        = "numeric",   # Total number of simulations in MSE run.
                CppMethod        = "numeric",
                UseCluster       = "numeric",
 
@@ -101,8 +103,10 @@ setClass("OMd",representation(
              prototype = list(
                tuneTol       = 0.01,
                tuneLogDomain = c(-3,0.5),
-               RecScale      = karray(c(1))
-             )
+               RecScale      = karray(c(1)),
+               modelWeight   = karray(c(1)),
+               totalSims     = 0               # default of 0 means simulations are based only on nsimPerOMFile.
+             )                                 # non 0 totalSims and the nsimPerOMFile is calculated based on modelWeight and totalSims.
 )
 
 
@@ -429,15 +433,31 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
   MSY_projection_sims <- karray(NA,dim=c(nOMfiles,2))
 
+  # Check if we are using model plausibility weighting
+  if (length(OMd@modelWeight) == 1)
+  {
+    # do nothing. Default behaviour if modelWeight unspecified.
+  }
+  else if (length(OMd@modelWeight) == length(OMd@OMList))
+  {
+    if (OMd@totalSims < 1)
+    {
+      print("Error: model definition totalSims is too small. It must be at least 1")
+      stop()
+    }
+
+    OMd@nsimPerOMFile <- karray(as.vector(t(rmultinom(1, size=OMd@totalSims, prob=OMd@modelWeight))))
+  }
+  else
+  {
+    print("Error: model definition modelWeight vector is wrong length. It must be length(OMd@OMList) in length")
+    stop()
+  }
+
   par(mfrow=c(3,3)) #Plot some SS results while importing
 
   for(iom in 1:nOMfiles)
   {
-    if (exists("ssMod"))
-    {
-      rm(ssMod)
-    }
-
     #indices to fill karrays with OM-specific number of simulations
     if (iom == 1)
     {
@@ -451,571 +471,611 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
     lastSimNum <- sum(.Object@nsimPerOMFile[1:iom])
 
-    print(c("importing ", .Object@OMList[iom]))
-
-    ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
-
-    if (iom == 1)
+    if (lastSimNum >= firstSimNum)
     {
-      #define karrays based on these inputs; dimensions must remain the same for other files
-
-      .Object@nfleets   <- as.integer(sum(ssMod$IsFishFleet)) # P nfleets excluding surveys (and some fleets are misleading - should be re-configured as time blocks in selectivity)
-
-      if (.Object@nfleets != OMd@nfleets)
+      if (exists("ssMod"))
       {
-        print("nfleet inconsistency error")
+        rm(ssMod)
+      }
+
+      print(c("importing ", .Object@OMList[iom]))
+
+      ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
+
+      if (iom == 1)
+      {
+        #define karrays based on these inputs; dimensions must remain the same for other files
+
+        .Object@nfleets   <- as.integer(sum(ssMod$IsFishFleet)) # P nfleets excluding surveys (and some fleets are misleading - should be re-configured as time blocks in selectivity)
+
+        if (.Object@nfleets != OMd@nfleets)
+        {
+          print("nfleet inconsistency error")
+          stop()
+        }
+
+        .Object@nCPUE     <- ssMod$nfleets - ssMod$nfishfleets
+        .Object@nareas    <- as.integer(ssMod$nareas)
+
+        #time translations:
+        #YFT 101 =1972 Q1 used to define MSE startyr (for plotting purposes)
+        #YFT 273 =2015 Q1 is first projection yr
+        #BET 101 = 1951 Q1
+        #BET 345 =2013 Q1 is first proj yr
+
+        .Object@nyears    <- as.integer((ssMod$endyr - OMd@firstSSYr + 1) / .Object@nsubyears)
+        nagesss           <- length(ssMod$endgrowth$Age) #note MSE age 1 = SS age 0
+        .Object@nages     <- as.integer(nagesss)                   #instead of plus group
+        allyears          <- .Object@nyears + .Object@proyears
+
+        .Object@yrLabels       <- karray(OMd@firstCalendarYr - 1 + 1:allyears)
+        .Object@seasonLabels   <- karray((1:.Object@nsubyears) / .Object@nsubyears - 0.5 * (1 / .Object@nsubyears))
+        .Object@yrSeasLabels   <- karray(rep((OMd@firstCalendarYr - 1 + 1:allyears), each=.Object@nsubyears) + rep(.Object@seasonLabels, times=allyears))
+        .Object@firstMPYr      <- OMd@firstMPYr
+        .Object@MPDataLag      <- OMd@MPDataLag
+        .Object@catchBridge    <- OMd@catchBridge
+        .Object@catchBridgeCV  <- OMd@catchBridgeCV
+
+        .Object@M         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))
+        .Object@h         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
+        .Object@ReccvT    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
+        .Object@ReccvR    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nareas))
+
+        .Object@Recsubyr  <- c(1:4)  #recruit every quarter
+
+        .Object@Recdist   <- karray(NA, dim=c(.Object@nsim, .Object@npop, ssMod$nareas)) #recruitment distribution by areas
+
+        .Object@Recdevs      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears * length(.Object@Recsubyr)))
+        .Object@Len_age      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #cm
+        .Object@Len_age_mid  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #cm
+        .Object@Wt_age       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
+        .Object@Wt_age_SB    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
+        .Object@Wt_age_mid   <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
+        .Object@mat          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))
+        .Object@sel          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, .Object@nages))
+        .Object@CPUEsel      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nages, .Object@nCPUE))
+        .Object@selTSSign    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
+        .Object@selTSWaveLen <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
+        .Object@mov          <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas)) # Initialise to 1 because C++ model requires valid mov
+        .Object@Idist        <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nareas)) # Initialise to 1 because C++ model requires valid Idist
+        .Object@R0           <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
+        .Object@Css          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears,.Object@nfleets))      # Catch numbers
+        .Object@CAAFss       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nages, allyears,.Object@nfleets))     # Catch at age by fleets
+        .Object@SSBAss       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # age aggregated SSB
+        .Object@CBss         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # Catch biomass
+        .Object@Bss          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # biomass
+        .Object@Recss        <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # recruitment
+        .Object@RecYrQtrss   <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears*.Object@nsubyears))    # quarterly recruitment
+        .Object@NLLss        <- karray(as.double(NA), dim=c(.Object@nsim, allyears,.Object@nsubyears, .Object@nareas))  # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
+        .Object@NLLIss       <- karray(as.double(NA), dim=c(.Object@nsim, allyears))                                    # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
+        .Object@NBeforeInit  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nareas)) # Initial population at the beginning of projection before movement and mortality for reporting
+        .Object@q            <- karray(as.double(0.0), dim=c(.Object@nsim, .Object@nfleets))
+        .Object@E            <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, allyears))
+
+        #should probably force nCPUE = nareas (?)
+        .Object@CPUEFleetNums  <- karray(ssMod$fleet_ID[!ssMod$IsFishFleet], dim=c(.Object@nCPUE))
+        .Object@CPUEFleetAreas <- karray(ssMod$fleet_area[!ssMod$IsFishFleet], dim=c(.Object@nCPUE))
+
+        .Object@CPUEobsMR     <- karray(as.double(NA), dim=c(.Object@nsim, allyears, .Object@nsubyears, .Object@nCPUE))
+        .Object@CPUEobsY      <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
+        .Object@initIDev      <- karray(as.double(NA), dim=c(.Object@nsim))
+        .Object@ECurrent      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
+        .Object@CMCurrent     <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
+        .Object@EByQtrLastYr  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
+
+        .Object@F_FMSYss <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
+        .Object@Frepss   <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
+
+        .Object@IAC      <- karray(as.double(NA), dim=c(.Object@nsim))
+        .Object@ITrend   <- karray(as.double(1.0), dim=c(.Object@nsim, allyears))
+
+      }
+
+      #index each sim with an OM specification that can be parsed later
+      .Object@OMid[firstSimNum:lastSimNum] <- .Object@OMList[[iom]]
+
+      # --- set up M -------
+      #assumes the last year vector is the one to use in projections, ignores sex, morphs, temporal varying growth)
+      #for some reason SS M matrix exceeds the final year and begins to deviate...must be used for something else
+      # not sure why the original YFT specification seems unduly complicated, check its still ok
+      nColOffset <- 3
+
+      #SS does not report M in final time step for some reason (i.e. should be ssMod$endyr - ssMod$startyr +1)
+      .Object@M[firstSimNum:lastSimNum,,,] <- .Object@nsubyears * karray(rep(as.numeric(ssMod$M_at_age[ssMod$endyr - ssMod$startyr ,nColOffset+1:(nagesss)]),
+                                                                             each=.Object@nsimPerOMFile[iom] * .Object@npop),
+                                                                         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+
+      #SS reported M(last age)=NA for some reason
+      .Object@M[firstSimNum:lastSimNum,, .Object@nages,] <- .Object@M[keep(firstSimNum:lastSimNum),, .Object@nages - 1, ]
+
+      # ---- Stock-recruit relationships -------
+      .Object@SRrel <- as.integer(1) #BH: steepness ssMod$parameters$Label="SR_BH_steep"
+      .Object@h[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_BH_steep",]$Value,
+                                                   dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
+
+      #assumes all sims and pops identical for given OMFile
+      .Object@h[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_BH_steep",]$Value,
+                                                   dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
+
+      #assumes all sims and pops identical for given OMFile
+      #.Object@ReccvT[((iom - 1) * nsimPerOMFile + 1):(iom * nsimPerOMFile),] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_sigmaR",]$Value, dim=c(nsimPerOMFile, .Object@npop))
+
+      # Rec sigma - if ReccvTin is negative use the SS file, if non-positive use ReccvTin
+      if (OMd@ReccvTin[1] >= 0)
+      {
+        .Object@ReccvT[firstSimNum:lastSimNum,] <- karray(OMd@ReccvTin,
+                                                          dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
+      }
+      else
+      {
+        .Object@ReccvT[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_sigmaR",]$Value,
+                                                          dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
+      }
+
+      #assumes all sims and pops identical for given OMFile
+      if (.Object@nareas > 1)
+      {
+        tmp <- NULL
+
+        for(r in 1:.Object@nareas)
+        {
+          tmp <- c(tmp, ssMod$parameters$Value[ssMod$parameters$Label == paste("RecrDist_Area_", r, sep="")])
+        }
+
+        # note that lower bound parameter value is input for areas which have zero rec by definition in SS (~0.1%) - keep this to prevent NA issues
+        tmp <- exp(tmp)
+        tmp <- tmp / sum(tmp)
+        .Object@Recdist[firstSimNum:lastSimNum,,] <- karray(rep(tmp, each=.Object@nsimPerOMFile[iom]),
+                                                            dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nareas))
+      }
+      else
+      {
+        .Object@Recdist[] <- 1
+      }
+
+      RecACT <- karray(OMd@RecACTin, dim=c(.Object@nsim, .Object@npop))  #input value; could extract from each OM file
+
+      .Object@ReccvRin                          <- OMd@ReccvRin
+      .Object@ReccvR[firstSimNum:lastSimNum,,]  <- karray(OMd@ReccvRin, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nareas))
+      .Object@IAC[firstSimNum:lastSimNum]       <- karray(OMd@IACin, dim=lastSimNum - firstSimNum + 1)  #input value; could extract from each OM file
+
+      # Trend in CPUE observation error (Multiplier)
+      if (OMd@ITrendin < 0)
+      {
+        #the catchability trend is determined from the q value in each file name independently
+        print("Warning: file-specific index trends assume the single digit following a single q in the filename defines the trend")
+        qVal <- as.numeric(substr(OMd@OMList[iom], str_locate(OMd@OMList[iom], "q") + 1, str_locate(OMd@OMList[iom], "q") + 1)) #Should probably revise to 2 digits on next grid iteration
+        .Object@ITrend[firstSimNum:lastSimNum, (.Object@nyears + 1):(.Object@nyears + .Object@proyears)] <- rep(cumprod(rep(1 + 0.01 * qVal, .Object@proyears)), times=length(firstSimNum:lastSimNum))
+      }
+      else
+      {
+        #use the input value for all sims
+        .Object@ITrend[firstSimNum:lastSimNum,(.Object@nyears + 1):(.Object@nyears + .Object@proyears)] <- rep(cumprod(rep(1 + 0.01 * OMd@ITrendin, .Object@proyears)), times=length(firstSimNum:lastSimNum))
+      }
+
+      #autocorrelated rec devs for projection years
+      rndDevs <- karray(rep(.Object@ReccvT[firstSimNum:lastSimNum],
+                            times=.Object@npop * allyears * length(.Object@Recsubyr)) * rnorm(.Object@nsimPerOMFile[iom] * .Object@npop * allyears * length(.Object@Recsubyr)),
+                        dim=c(.Object@nsimPerOMFile[iom], .Object@npop, allyears * length(.Object@Recsubyr)))
+
+      for (t in (.Object@nyears * length(.Object@Recsubyr) + 1):(allyears * length(.Object@Recsubyr)))
+      {
+        rndDevs[,,t] <- RecACT[keep(firstSimNum:lastSimNum),] * rndDevs[,,t-1] + rndDevs[,,t] * sqrt(1 - RecACT[keep(firstSimNum:lastSimNum),] ^ 2)
+      }
+
+      # We attach any recruitment scaling (recuitment shock implementation) to the recruitment deviates.
+      SPTm  <- as.matrix(expand.grid(firstSimNum:lastSimNum, 1:.Object@npop, 1:(allyears * length(.Object@Recsubyr))))
+      S     <- SPTm[,c(1)]
+      PTm   <- SPTm[,c(2,3)]
+      Y     <- floor((SPTm[,c(3)] - 1) / length(.Object@Recsubyr)) + 1  # Calculate year from timestep
+      SPTm2 <- SPTm
+      SPTm2[,1] <- SPTm2[,1] - (firstSimNum - 1)
+
+      if (length(OMd@RecScale) == 1)
+      {
+        .Object@Recdevs[SPTm] <- exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
+      }
+      else if (length(OMd@RecScale) == OMd@proyears)
+      {
+        RecScale              <- karray(c(rep(1.0, times=.Object@nyears), OMd@RecScale))
+        .Object@Recdevs[SPTm] <- RecScale[Y] * exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
+      }
+      else
+      {
+        print("Error: model definition RecScale vector is wrong length. It must be nyears in length")
         stop()
       }
 
-      .Object@nCPUE     <- ssMod$nfleets - ssMod$nfishfleets
-      .Object@nareas    <- as.integer(ssMod$nareas)
+      #Len_age relationships
+      #nColOffset <- 4
+      #.Object@Len_age[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$growthseries[nColOffset + 1:nagesss]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
+      #                                                     dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+      .Object@Len_age[firstSimNum:lastSimNum,,,]     <- karray(rep(ssMod$endgrowth$Len_Beg, each=.Object@nsimPerOMFile[iom] * .Object@npop),
+           dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+      .Object@Len_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Len_Mid, each=.Object@nsimPerOMFile[iom] * .Object@npop),
+           dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
 
-      #time translations:
-      #YFT 101 =1972 Q1 used to define MSE startyr (for plotting purposes)
-      #YFT 273 =2015 Q1 is first projection yr
-      #BET 101 = 1951 Q1
-      #BET 345 =2013 Q1 is first proj yr
+      #weight-length parameters
+      # appears that SS does not apply them to the mean Len(a), but integrates to account for the non-linearity - use SS mass inputs instead
+      .Object@a <- ssMod$parameters[ssMod$parameters$Label == "Wtlen_1_Fem",]$Value
+      .Object@b <- ssMod$parameters[ssMod$parameters$Label == "Wtlen_2_Fem",]$Value
 
-      .Object@nyears    <- as.integer((ssMod$endyr - OMd@firstSSYr + 1) / .Object@nsubyears)
-      nagesss           <- length(ssMod$endgrowth$Age) #note MSE age 1 = SS age 0
-      .Object@nages     <- as.integer(nagesss)                   #instead of plus group
-      allyears          <- .Object@nyears + .Object@proyears
+      #This mass-at-age conversoin appears to be overly simplified:
+      #.Object@Wt_age[firstSimNum:lastSimNum,,,]     <- .Object@a * .Object@Len_age[keep(firstSimNum:lastSimNum),,,] ^ .Object@b
+      #.Object@Wt_age_mid[firstSimNum:lastSimNum,,,] <- .Object@a * .Object@Len_age_mid[keep(firstSimNum:lastSimNum),,,] ^ .Object@b
 
-      .Object@yrLabels       <- karray(OMd@firstCalendarYr - 1 + 1:allyears)
-      .Object@seasonLabels   <- karray((1:.Object@nsubyears) / .Object@nsubyears - 0.5 * (1 / .Object@nsubyears))
-      .Object@yrSeasLabels   <- karray(rep((OMd@firstCalendarYr - 1 + 1:allyears), each=.Object@nsubyears) + rep(.Object@seasonLabels, times=allyears))
-      .Object@firstMPYr      <- OMd@firstMPYr
-      .Object@MPDataLag      <- OMd@MPDataLag
-      .Object@catchBridge    <- OMd@catchBridge
-      .Object@catchBridgeCV  <- OMd@catchBridgeCV
+      # Wt_age_SB includes Wt_age * maturity (useful for dispoportional fecundity)
+      .Object@Wt_age_SB[firstSimNum:lastSimNum,,,]  <- karray(rep(as.numeric(ssMod$wtatage[1,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
+           dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+      .Object@Wt_age[firstSimNum:lastSimNum,,,]     <- karray(rep(as.numeric(ssMod$wtatage[2,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
+           dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+      .Object@Wt_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$wtatage[3,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
+           dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
 
-      .Object@M         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))
-      .Object@h         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
-      .Object@ReccvT    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
-      .Object@ReccvR    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nareas))
+      #Maturity - product of age and length-based maturity seems to cover both options
+      #But does not add up to the calculation below; presumably SS does an integration for maturity as well)
+      #.Object@mat[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Age_Mat * ssMod$endgrowth$Len_Mat, each=.Object@nsimPerOMFile[iom] * .Object@npop),
+      #                                                 dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
 
-      .Object@Recsubyr  <- c(1:4)  #recruit every quarter
+      .Object@mat[firstSimNum:lastSimNum,,,] <- .Object@Wt_age_SB[firstSimNum:lastSimNum,,,]/.Object@Wt_age[firstSimNum:lastSimNum,,,]
 
-      .Object@Recdist   <- karray(NA, dim=c(.Object@nsim, .Object@npop, ssMod$nareas)) #recruitment distribution by areas
+      #.Object@Wt_age_SB[firstSimNum:lastSimNum,,,]ssMod$endgrowth$Age_Mat * ssMod$endgrowth$Len_Mat
 
-      .Object@Recdevs      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears * length(.Object@Recsubyr)))
-      .Object@Len_age      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #cm
-      .Object@Len_age_mid  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #cm
-      .Object@Wt_age       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
-      .Object@Wt_age_SB    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
-      .Object@Wt_age_mid   <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))      #kg
-      .Object@mat          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, allyears))
-      .Object@sel          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, .Object@nages))
-      .Object@CPUEsel      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nages, .Object@nCPUE))
-      .Object@selTSSign    <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
-      .Object@selTSWaveLen <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, 2))
-      .Object@mov          <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas)) # Initialise to 1 because C++ model requires valid mov
-      .Object@Idist        <- karray(as.double(1.0), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nareas)) # Initialise to 1 because C++ model requires valid Idist
-      .Object@R0           <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop))
-      .Object@Css          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears,.Object@nfleets))      # Catch numbers
-      .Object@CAAFss       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nages, allyears,.Object@nfleets))     # Catch at age by fleets
-      .Object@SSBAss       <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # age aggregated SSB
-      .Object@CBss         <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # Catch biomass
-      .Object@Bss          <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # biomass
-      .Object@Recss        <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears))                      # recruitment
-      .Object@RecYrQtrss   <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, allyears*.Object@nsubyears))    # quarterly recruitment
-      .Object@NLLss        <- karray(as.double(NA), dim=c(.Object@nsim, allyears,.Object@nsubyears, .Object@nareas))  # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
-      .Object@NLLIss       <- karray(as.double(NA), dim=c(.Object@nsim, allyears))                                    # Longline-selected Numbers over all ages, areas, populations for aggregate abundance index
-      .Object@NBeforeInit  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@npop, .Object@nages, .Object@nareas)) # Initial population at the beginning of projection before movement and mortality for reporting
-      .Object@q            <- karray(as.double(0.0), dim=c(.Object@nsim, .Object@nfleets))
-      .Object@E            <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nfleets, allyears))
+      #extract CPUE Observations
+      print("Warning: missing CPUE values (after time series start) are substituted with preceding value(i.e. not a good idea if there are many missing obs)")
+      print("Warning: Observed CPUE series are adopted from the first SS model in the OMList")
+      #substitute missing CPUE values for expedience (assumes SS output in temporal order)
 
-      #should probably force nCPUE = nareas (?)
-      .Object@CPUEFleetNums  <- karray(ssMod$fleet_ID[!ssMod$IsFishFleet], dim=c(.Object@nCPUE))
-      .Object@CPUEFleetAreas <- karray(ssMod$fleet_area[!ssMod$IsFishFleet], dim=c(.Object@nCPUE))
+      # all OMs use the CPUE data defined in the first SS model list
+      # This is required because catchability trends in the SS assessment models are implemented with fake CPUE series
+      # but the MP only has one set of data to use
 
-      .Object@CPUEobsMR     <- karray(as.double(NA), dim=c(.Object@nsim, allyears, .Object@nsubyears, .Object@nCPUE))
-      .Object@CPUEobsY      <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
-      .Object@initIDev      <- karray(as.double(NA), dim=c(.Object@nsim))
-      .Object@ECurrent      <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
-      .Object@CMCurrent     <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
-      .Object@EByQtrLastYr  <- karray(as.double(NA), dim=c(.Object@nsim, .Object@nsubyears, .Object@nareas, .Object@nfleets))
-
-      .Object@F_FMSYss <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
-      .Object@Frepss   <- karray(as.double(NA), dim=c(.Object@nsim, allyears))
-
-      .Object@IAC      <- karray(as.double(NA), dim=c(.Object@nsim))
-      .Object@ITrend   <- karray(as.double(1.0), dim=c(.Object@nsim, allyears))
-
-    }
-
-    #index each sim with an OM specification that can be parsed later
-    .Object@OMid[firstSimNum:lastSimNum] <- .Object@OMList[[iom]]
-
-    # --- set up M -------
-    #assumes the last year vector is the one to use in projections, ignores sex, morphs, temporal varying growth)
-    #for some reason SS M matrix exceeds the final year and begins to deviate...must be used for something else
-    # not sure why the original YFT specification seems unduly complicated, check its still ok
-    nColOffset <- 3
-
-    #SS does not report M in final time step for some reason (i.e. should be ssMod$endyr - ssMod$startyr +1)
-    .Object@M[firstSimNum:lastSimNum,,,] <- .Object@nsubyears * karray(rep(as.numeric(ssMod$M_at_age[ssMod$endyr - ssMod$startyr ,nColOffset+1:(nagesss)]),
-                                                                           each=.Object@nsimPerOMFile[iom] * .Object@npop),
-                                                                       dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-
-    #SS reported M(last age)=NA for some reason
-    .Object@M[firstSimNum:lastSimNum,, .Object@nages,] <- .Object@M[keep(firstSimNum:lastSimNum),, .Object@nages - 1, ]
-
-    # ---- Stock-recruit relationships -------
-    .Object@SRrel <- as.integer(1) #BH: steepness ssMod$parameters$Label="SR_BH_steep"
-    .Object@h[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_BH_steep",]$Value,
-                                                 dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
-
-    #assumes all sims and pops identical for given OMFile
-    .Object@h[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_BH_steep",]$Value,
-                                                 dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
-
-    #assumes all sims and pops identical for given OMFile
-    #.Object@ReccvT[((iom - 1) * nsimPerOMFile + 1):(iom * nsimPerOMFile),] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_sigmaR",]$Value, dim=c(nsimPerOMFile, .Object@npop))
-
-    # Rec sigma - if ReccvTin is negative use the SS file, if non-positive use ReccvTin
-    if (OMd@ReccvTin[1] >= 0)
-    {
-      .Object@ReccvT[firstSimNum:lastSimNum,] <- karray(OMd@ReccvTin,
-                                                        dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
-    }
-    else
-    {
-      .Object@ReccvT[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_sigmaR",]$Value,
-                                                        dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
-    }
-
-    #assumes all sims and pops identical for given OMFile
-    if (.Object@nareas > 1)
-    {
-      tmp <- NULL
-
-      for(r in 1:.Object@nareas)
+      if (iom == 1)
       {
-        tmp <- c(tmp, ssMod$parameters$Value[ssMod$parameters$Label == paste("RecrDist_Area_", r, sep="")])
+        totalSims <- sum(.Object@nsimPerOMFile)
+
+        for (i in 1:nrow(ssMod$cpue))
+        {
+          yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr=ssMod$cpue$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
+          #.Object@CPUEobsMR[firstSimNum:lastSimNum,yrSeas[1]:.Object@nyears,yrSeas[2]:.Object@nsubyears, as.numeric(substr(ssMod$cpue$Name[i], 7, 7))] <- ssMod$cpue$Obs[i]
+          .Object@CPUEobsMR[,yrSeas[1]:.Object@nyears,yrSeas[2]:.Object@nsubyears, as.numeric(substr(ssMod$cpue$Name[i], 7, 7))] <- rep(ssMod$cpue$Obs[i],times=totalSims)
+        }
+
+        #annual
+        .Object@CPUEobsY[] <- apply(.Object@CPUEobsMR[,,,], FUN=sum, MARGIN=c(1,2))
       }
 
-      # note that lower bound parameter value is input for areas which have zero rec by definition in SS (~0.1%) - keep this to prevent NA issues
-      tmp <- exp(tmp)
-      tmp <- tmp / sum(tmp)
-      .Object@Recdist[firstSimNum:lastSimNum,,] <- karray(rep(tmp, each=.Object@nsimPerOMFile[iom]),
-                                                          dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nareas))
-    }
-    else
-    {
-      .Object@Recdist[] <- 1
-    }
+      #calculate initial aggregate annual CPUE index deviate for aggregate autocorrelation of index
+      lastYrIndices <- (max(ssMod$cpue$Yr) - 3):max(ssMod$cpue$Yr)
+      .Object@initIDev[firstSimNum:lastSimNum] <- rep(log(sum(ssMod$cpue$Exp[(ssMod$cpue$Yr %in% lastYrIndices)]) /
+                                                      (sum(ssMod$cpue$Obs[(ssMod$cpue$Yr %in% lastYrIndices)]))),
+                                                      times=.Object@nsimPerOMFile[iom])
 
-    RecACT <- karray(OMd@RecACTin, dim=c(.Object@nsim, .Object@npop))  #input value; could extract from each OM file
+      sel     <- karray(NA, c(.Object@nsimPerOMFile[iom], .Object@nfleets, .Object@nages))
+      CPUEsel <- karray(NA, c(.Object@nsimPerOMFile[iom], .Object@nages, .Object@nCPUE))
 
-    .Object@ReccvRin                          <- OMd@ReccvRin
-    .Object@ReccvR[firstSimNum:lastSimNum,,]  <- karray(OMd@ReccvRin, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nareas))
-    .Object@IAC[firstSimNum:lastSimNum]       <- karray(OMd@IACin, dim=lastSimNum - firstSimNum + 1)  #input value; could extract from each OM file
-
-    # Trend in CPUE observation error (Multiplier)
-    if (OMd@ITrendin < 0)
-    {
-      #the catchability trend is determined from the q value in each file name independently
-      print("Warning: file-specific index trends assume the single digit following a single q in the filename defines the trend")
-      qVal <- as.numeric(substr(OMd@OMList[iom], str_locate(OMd@OMList[iom], "q") + 1, str_locate(OMd@OMList[iom], "q") + 1)) #Should probably revise to 2 digits on next grid iteration
-      .Object@ITrend[firstSimNum:lastSimNum, (.Object@nyears + 1):(.Object@nyears + .Object@proyears)] <- rep(cumprod(rep(1 + 0.01 * qVal, .Object@proyears)), times=length(firstSimNum:lastSimNum))
-    }
-    else
-    {
-      #use the input value for all sims
-      .Object@ITrend[firstSimNum:lastSimNum,(.Object@nyears + 1):(.Object@nyears + .Object@proyears)] <- rep(cumprod(rep(1 + 0.01 * OMd@ITrendin, .Object@proyears)), times=length(firstSimNum:lastSimNum))
-    }
-
-    #autocorrelated rec devs for projection years
-    rndDevs <- karray(rep(.Object@ReccvT[firstSimNum:lastSimNum],
-                          times=.Object@npop * allyears * length(.Object@Recsubyr)) * rnorm(.Object@nsimPerOMFile[iom] * .Object@npop * allyears * length(.Object@Recsubyr)),
-                      dim=c(.Object@nsimPerOMFile[iom], .Object@npop, allyears * length(.Object@Recsubyr)))
-
-    for (t in (.Object@nyears * length(.Object@Recsubyr) + 1):(allyears * length(.Object@Recsubyr)))
-    {
-      rndDevs[,,t] <- RecACT[keep(firstSimNum:lastSimNum),] * rndDevs[,,t-1] + rndDevs[,,t] * sqrt(1 - RecACT[keep(firstSimNum:lastSimNum),] ^ 2)
-    }
-
-    # We attach any recruitment scaling (recuitment shock implementation) to the recruitment deviates.
-    SPTm  <- as.matrix(expand.grid(firstSimNum:lastSimNum, 1:.Object@npop, 1:(allyears * length(.Object@Recsubyr))))
-    S     <- SPTm[,c(1)]
-    PTm   <- SPTm[,c(2,3)]
-    Y     <- floor((SPTm[,c(3)] - 1) / length(.Object@Recsubyr)) + 1  # Calculate year from timestep
-    SPTm2 <- SPTm
-    SPTm2[,1] <- SPTm2[,1] - (firstSimNum - 1)
-
-    if (length(OMd@RecScale) == 1)
-    {
-      .Object@Recdevs[SPTm] <- exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
-    }
-    else if (length(OMd@RecScale) == OMd@proyears)
-    {
-      RecScale              <- karray(c(rep(1.0, times=.Object@nyears), OMd@RecScale))
-      .Object@Recdevs[SPTm] <- RecScale[Y] * exp(rndDevs[SPTm2] - 0.5 * .Object@ReccvT[keep(S)] ^ 2)
-    }
-    else
-    {
-      print("Error: model definition RecScale vector is wrong length. It must be nyears in length")
-      stop()
-    }
-
-    #Len_age relationships
-    #nColOffset <- 4
-    #.Object@Len_age[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$growthseries[nColOffset + 1:nagesss]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
-    #                                                     dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-    .Object@Len_age[firstSimNum:lastSimNum,,,]     <- karray(rep(ssMod$endgrowth$Len_Beg, each=.Object@nsimPerOMFile[iom] * .Object@npop),
-         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-    .Object@Len_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Len_Mid, each=.Object@nsimPerOMFile[iom] * .Object@npop),
-         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-
-    #weight-length parameters
-    # appears that SS does not apply them to the mean Len(a), but integrates to account for the non-linearity - use SS mass inputs instead
-    .Object@a <- ssMod$parameters[ssMod$parameters$Label == "Wtlen_1_Fem",]$Value
-    .Object@b <- ssMod$parameters[ssMod$parameters$Label == "Wtlen_2_Fem",]$Value
-
-    #This mass-at-age conversoin appears to be overly simplified:
-    #.Object@Wt_age[firstSimNum:lastSimNum,,,]     <- .Object@a * .Object@Len_age[keep(firstSimNum:lastSimNum),,,] ^ .Object@b
-    #.Object@Wt_age_mid[firstSimNum:lastSimNum,,,] <- .Object@a * .Object@Len_age_mid[keep(firstSimNum:lastSimNum),,,] ^ .Object@b
-
-    # Wt_age_SB includes Wt_age * maturity (useful for dispoportional fecundity)
-    .Object@Wt_age_SB[firstSimNum:lastSimNum,,,]  <- karray(rep(as.numeric(ssMod$wtatage[1,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
-         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-    .Object@Wt_age[firstSimNum:lastSimNum,,,]     <- karray(rep(as.numeric(ssMod$wtatage[2,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
-         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-    .Object@Wt_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$wtatage[3,7:(7+.Object@nages-1)]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
-         dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-
-    #Maturity - product of age and length-based maturity seems to cover both options
-    #But does not add up to the calculation below; presumably SS does an integration for maturity as well)
-    #.Object@mat[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Age_Mat * ssMod$endgrowth$Len_Mat, each=.Object@nsimPerOMFile[iom] * .Object@npop),
-    #                                                 dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
-
-    .Object@mat[firstSimNum:lastSimNum,,,] <- .Object@Wt_age_SB[firstSimNum:lastSimNum,,,]/.Object@Wt_age[firstSimNum:lastSimNum,,,]
-
-    #.Object@Wt_age_SB[firstSimNum:lastSimNum,,,]ssMod$endgrowth$Age_Mat * ssMod$endgrowth$Len_Mat
-
-    #extract CPUE Observations
-    print("Warning: missing CPUE values (after time series start) are substituted with preceding value(i.e. not a good idea if there are many missing obs)")
-    print("Warning: Observed CPUE series are adopted from the first SS model in the OMList")
-    #substitute missing CPUE values for expedience (assumes SS output in temporal order)
-
-    # all OMs use the CPUE data defined in the first SS model list
-    # This is required because catchability trends in the SS assessment models are implemented with fake CPUE series
-    # but the MP only has one set of data to use
-
-    if (iom == 1)
-    {
-      totalSims <- sum(.Object@nsimPerOMFile)
-
-      for (i in 1:nrow(ssMod$cpue))
+      #fishery selectivity
+      for (ff in 1:.Object@nfleets)
       {
-        yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr=ssMod$cpue$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
-        #.Object@CPUEobsMR[firstSimNum:lastSimNum,yrSeas[1]:.Object@nyears,yrSeas[2]:.Object@nsubyears, as.numeric(substr(ssMod$cpue$Name[i], 7, 7))] <- ssMod$cpue$Obs[i]
-        .Object@CPUEobsMR[,yrSeas[1]:.Object@nyears,yrSeas[2]:.Object@nsubyears, as.numeric(substr(ssMod$cpue$Name[i], 7, 7))] <- rep(ssMod$cpue$Obs[i],times=totalSims)
-      }
-
-      #annual
-      .Object@CPUEobsY[] <- apply(.Object@CPUEobsMR[,,,], FUN=sum, MARGIN=c(1,2))
-    }
-
-    #calculate initial aggregate annual CPUE index deviate for aggregate autocorrelation of index
-    lastYrIndices <- (max(ssMod$cpue$Yr) - 3):max(ssMod$cpue$Yr)
-    .Object@initIDev[firstSimNum:lastSimNum] <- rep(log(sum(ssMod$cpue$Exp[(ssMod$cpue$Yr %in% lastYrIndices)]) /
-                                                    (sum(ssMod$cpue$Obs[(ssMod$cpue$Yr %in% lastYrIndices)]))),
-                                                    times=.Object@nsimPerOMFile[iom])
-
-    sel     <- karray(NA, c(.Object@nsimPerOMFile[iom], .Object@nfleets, .Object@nages))
-    CPUEsel <- karray(NA, c(.Object@nsimPerOMFile[iom], .Object@nages, .Object@nCPUE))
-
-    #fishery selectivity
-    for (ff in 1:.Object@nfleets)
-    {
-      nColOffset <- 7
-      sel[,ff,]  <- karray(rep(as.numeric(ssMod$ageselex[ssMod$ageselex$label == ssMod$endyr %&% "_"  %&% ff %&% "Asel", c(nColOffset + 1:nagesss)]),
-                               each=.Object@nsimPerOMFile[iom]),
-                           dim=c(.Object@nsimPerOMFile[iom], .Object@nages))
-      if (Report)
-      {
-        if (ff == 1)
+        nColOffset <- 7
+        sel[,ff,]  <- karray(rep(as.numeric(ssMod$ageselex[ssMod$ageselex$label == ssMod$endyr %&% "_"  %&% ff %&% "Asel", c(nColOffset + 1:nagesss)]),
+                                 each=.Object@nsimPerOMFile[iom]),
+                             dim=c(.Object@nsimPerOMFile[iom], .Object@nages))
+        if (Report)
         {
-          plot(sel[1,ff,], type='l', main="Fishery Sel, iom=" %&% iom)
-        }
-        else
-        {
-          lines(sel[1,ff,], col=ff)
-        }
-      }
-    }
-
-   .Object@sel[firstSimNum:lastSimNum,,] <- sel
-
-    #CPUE selectivity
-    for(iCPUE in 1:.Object@nCPUE)
-    {
-      nColOffset        <- 7
-      CPUEsel[,,iCPUE]  <- karray(rep(as.numeric(ssMod$ageselex[ssMod$ageselex$label == ssMod$endyr %&% "_"  %&% .Object@CPUEFleetNums[iCPUE] %&% "Asel",c(nColOffset + 1:nagesss)]),
-                                      each=.Object@nsimPerOMFile[iom]),
-                                  dim=c(.Object@nsimPerOMFile[iom],.Object@nages))
-
-      if (Report)
-      {
-        if (iCPUE == 1)
-        {
-          plot(CPUEsel[1,,iCPUE], type='l', main="CPUE Sel, iom=" %&% iom)
-        }
-        else
-        {
-          lines(CPUEsel[1,,iCPUE], col=iCPUE)
-        }
-      }
-    }
-
-    .Object@CPUEsel[firstSimNum:lastSimNum,,] <- CPUEsel
-
-    mov <- karray(0, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas))
-
-    if (.Object@nareas > 1)
-    {
-      #import SS movement parms
-      ssmov <- ssMod$movement
-
-      for (i in 1:nrow(ssmov))
-      {
-        from        <- ssmov$Source_area[i]
-        to          <- ssmov$Dest_area[i]
-        nColOffSet  <- 6
-        moveVec     <- ssmov[i, (nColOffSet + 1):(nColOffSet + nagesss)]
-        moveVec     <- as.numeric(moveVec) # MSE maxage older than SS
-
-        for (is in 1:.Object@nsimPerOMFile[iom])
-        {
-          for (ip in 1:.Object@npop)
+          if (ff == 1)
           {
-            #Note that OM is configured for seasonal movement, but SS uses mean annual migration; hence the repetition for each OM season
-            for(im in 1:.Object@nsubyears)
+            plot(sel[1,ff,], type='l', main="Fishery Sel, iom=" %&% iom)
+          }
+          else
+          {
+            lines(sel[1,ff,], col=ff)
+          }
+        }
+      }
+
+     .Object@sel[firstSimNum:lastSimNum,,] <- sel
+
+      #CPUE selectivity
+      for(iCPUE in 1:.Object@nCPUE)
+      {
+        nColOffset        <- 7
+        CPUEsel[,,iCPUE]  <- karray(rep(as.numeric(ssMod$ageselex[ssMod$ageselex$label == ssMod$endyr %&% "_"  %&% .Object@CPUEFleetNums[iCPUE] %&% "Asel",c(nColOffset + 1:nagesss)]),
+                                        each=.Object@nsimPerOMFile[iom]),
+                                    dim=c(.Object@nsimPerOMFile[iom],.Object@nages))
+
+        if (Report)
+        {
+          if (iCPUE == 1)
+          {
+            plot(CPUEsel[1,,iCPUE], type='l', main="CPUE Sel, iom=" %&% iom)
+          }
+          else
+          {
+            lines(CPUEsel[1,,iCPUE], col=iCPUE)
+          }
+        }
+      }
+
+      .Object@CPUEsel[firstSimNum:lastSimNum,,] <- CPUEsel
+
+      mov <- karray(0, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nsubyears, .Object@nareas, .Object@nareas))
+
+      if (.Object@nareas > 1)
+      {
+        #import SS movement parms
+        ssmov <- ssMod$movement
+
+        for (i in 1:nrow(ssmov))
+        {
+          from        <- ssmov$Source_area[i]
+          to          <- ssmov$Dest_area[i]
+          nColOffSet  <- 6
+          moveVec     <- ssmov[i, (nColOffSet + 1):(nColOffSet + nagesss)]
+          moveVec     <- as.numeric(moveVec) # MSE maxage older than SS
+
+          for (is in 1:.Object@nsimPerOMFile[iom])
+          {
+            for (ip in 1:.Object@npop)
             {
-              mov[is,ip,,im,from,to] <- moveVec
+              #Note that OM is configured for seasonal movement, but SS uses mean annual migration; hence the repetition for each OM season
+              for(im in 1:.Object@nsubyears)
+              {
+                mov[is,ip,,im,from,to] <- moveVec
+              }
+            }
+          }
+        }
+
+        .Object@mov[firstSimNum:lastSimNum,,,,,] <- mov
+
+    #readline(prompt="Warning: remove hi movvement rate test: ")
+    #.Object@mov[firstSimNum:lastSimNum,,,,,] <- mov*0+0.25 #uniform mixing test
+
+        #Initial distribution of N -not really relevant when adopting SS initial N
+        Idist <- karray(rep(0.0, times=(.Object@nsimPerOMFile[iom] * .Object@npop * .Object@nages * .Object@nareas)),
+                        c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas))
+
+        for (i in 1:30)
+        {
+          #at least nages/nsubyears
+          for (mm in 1:.Object@nsubyears)
+          {
+            #mean unfished equilibrium distribution (extra age calculaitons are redundant)
+            if (i == 1 & mm == 1)
+            {
+              Idist[,ip,1,] <- .Object@Recdist[keep(firstSimNum:lastSimNum),ip,]
+            }
+
+            Idist <- projection.domov(Ntemp=karray(Idist, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas)),
+                                      movtemp=karray(.Object@mov[firstSimNum:lastSimNum,,,mm,,], dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas, .Object@nareas)))
+
+            for(ip in 1:.Object@npop)
+            {
+              Idist[,ip,2:(.Object@nages),] <- Idist[,ip,1:(.Object@nages - 1),]
+              Idist[,ip,1,]                 <- as.double(.Object@Recdist[keep(firstSimNum:lastSimNum),ip,])
+            }
+          }
+        }
+
+        if (Report)
+        {
+          plot(Idist[1,1,,1], col=1, type='l', ylim=c(0, max(Idist[1,1,,])), xlab="age", ylab="Prop", main="Init N Dist by region")
+          lines(Idist[1,1,,2], col=2)
+          lines(Idist[1,1,,3], col=3)
+          lines(Idist[1,1,,4], col=4)
+        }
+
+        .Object@Idist[firstSimNum:lastSimNum,,,] <- Idist
+      }  # end if (nareas > 1)
+
+      # R0 extracted from SS
+      R0ss                                <- ssMod$parameters[ssMod$parameters$Label == "SR_LN(R0)",]$Value  # in thousands
+      .Object@R0[firstSimNum:lastSimNum,] <- karray(rep(exp(R0ss), each=.Object@nsimPerOMFile[iom] * .Object@npop),
+                                                    dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
+
+      #total numbers and spawning stock numbers
+      SSN     <- karray(NA, c(.Object@npop, .Object@nages, allyears + 1, .Object@nsubyears, .Object@nareas))
+      NBefore <- karray(NA, c(.Object@npop, .Object@nages, allyears + 1, .Object@nsubyears, .Object@nareas))
+
+      # Catch (numbers, then mass in MSE framework)
+      CssTmp <- karray(NA, c(.Object@npop, .Object@nages, allyears, .Object@nsubyears, .Object@nareas, .Object@nfleets))
+
+      #YFT input is in mass, except LL fleets in numbers (3,7,10,11,13) (though not #25 fresh tuna LL apparently?)
+      #check if catage in numbers or mass or mixed: appears to be in numbers:
+      #sum(ssMod$catage[ssMod$catage$Fleet==1 & ssMod$catage$Yr==272, 11:39])  = 936.9    # YFT.dat = 13598 = 15kg per gillnet fish
+      #sum(ssMod$catage[ssMod$catage$Fleet==3 & ssMod$catage$Yr==272, 11:39])  = 1.355    # YFT.dat = 1.355
+
+      # SS Catch
+      CssTmp[,,1:.Object@nyears,,,] <- 0.0
+
+      # SS Catch-at-age
+      CAss <- ssMod$catage[as.numeric(ssMod$catage$"Yr") >= OMd@firstSSYr,] # "Area"   "Fleet"  "Gender" "XX"     "XX"     "Morph"  "Yr"     "Seas"   "XX"     "Era"    "0"
+
+      for (i in 1:nrow(CAss))
+      {
+        #convert SS season (defined as year) to MSE year, season
+        yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr = CAss$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
+        nColOffset <- 10
+
+        #PAYMRF
+        CssTmp[1,1:nagesss,yrSeas[1],yrSeas[2],CAss$Area[i],CAss$Fleet[i]] <- as.numeric(CAss[i,nColOffset+1:nagesss])
+      }
+
+      .Object@Css[keep(firstSimNum:lastSimNum),,,]    <- rep(apply(CssTmp, c(1,3,6), sum), each=.Object@nsimPerOMFile[iom])
+      .Object@CAAFss[keep(firstSimNum:lastSimNum),,,] <- rep(apply(CssTmp, c(2,3,6), sum), each=.Object@nsimPerOMFile[iom])
+      .Object@CBss[keep(firstSimNum:lastSimNum),,]    <- rep(apply(CssTmp * karray(.Object@Wt_age_mid[1,,,], c(.Object@npop,.Object@nages, allyears,.Object@nsubyears,.Object@nareas,.Object@nfleets)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
+
+      #SS N(age)
+      # YFT Nss <- ssMod$natage[as.numeric(ssMod$natage$"Yr")>=101 & ssMod$natage$"Beg/Mid"=="B",]  #in thousands
+
+      Nss <- ssMod$natage[as.numeric(ssMod$natage$"Yr") >= OMd@firstSSYr & ssMod$natage$"Beg/Mid"=="B",]  #in thousands
+
+      for (i in 1:nrow(Nss))
+      {
+        #convert SS season (defined as year) to MSE year, season
+        yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr=Nss$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
+
+        nColOffset <- 11
+
+        NBefore[,1:nagesss,yrSeas[1],yrSeas[2],Nss$Area[i]] <- as.numeric(Nss[i,nColOffset + 1:nagesss])
+        SSN[,,yrSeas[1],yrSeas[2],Nss$Area[i]] <- NBefore[,,yrSeas[1],yrSeas[2],Nss$Area[i]] * .Object@mat[firstSimNum,,,yrSeas[1]]
+      }
+
+      .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- rep(NBefore[,,.Object@nyears,1,], each=.Object@nsimPerOMFile[iom])
+
+      #add noise to NBeforeInit
+      CVMatBySPA  <- rep(.Object@NInitCV * exp(-.Object@NInitCVdecay * (0:(.Object@nages - 1))), each=.Object@nsimPerOMFile[iom] * .Object@npop)
+      CVMatBySPAR <- karray(rep(CVMatBySPA, times=.Object@nareas), dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas))
+      Ndevs       <- exp(CVMatBySPAR * rnorm(prod(dim(.Object@NBeforeInit[keep(firstSimNum:lastSimNum),,,]))) - 0.5 * CVMatBySPAR*CVMatBySPAR)
+
+      .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- karray(.Object@NBeforeInit[keep(firstSimNum:lastSimNum),,,], dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas)) * Ndevs
+
+      .Object@SSBAss[firstSimNum:lastSimNum,,]       <- rep(apply(karray(SSN[,,keep(1:allyears),.Object@nsubyears,], c(.Object@npop,.Object@nages,allyears,.Object@nareas)) * karray(.Object@Wt_age[firstSimNum,,,1:allyears], c(.Object@npop,.Object@nages,allyears,.Object@nareas)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
+
+      # Bss mean over seasons
+      #.Object@Bss[firstSimNum:lastSimNum,,]          <- rep(apply(NBefore[,,keep(1:allyears),,] * karray(.Object@Wt_age[firstSimNum,,,keep(1:allyears)], c(.Object@npop,.Object@nages,allyears,.Object@nsubyears,.Object@nareas)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
+      BbyM                                           <- apply(NBefore[,,keep(1:allyears),,] * karray(.Object@Wt_age[firstSimNum,,,keep(1:allyears)], c(.Object@npop,.Object@nages,allyears,.Object@nsubyears,.Object@nareas)), c(1,3,4), sum)
+      BbyY                                           <- apply(BbyM, c(1,2), mean)
+      .Object@Bss[firstSimNum:lastSimNum,,]          <- rep(BbyY, each=.Object@nsimPerOMFile[iom])
+      .Object@Recss[firstSimNum:lastSimNum,,]        <- rep(apply(NBefore[,1,keep(1:allyears),,], c(2), sum), each=.Object@nsimPerOMFile[iom])
+
+      for (yyy in 1:allyears)
+      {
+        FirstIdx <- (yyy - 1) * .Object@nsubyears + 1
+        LastIdx  <- yyy * .Object@nsubyears
+
+        .Object@RecYrQtrss[firstSimNum:lastSimNum,,FirstIdx:LastIdx] <- rep(apply(NBefore[,1,yyy,keep(1:.Object@nsubyears),], c(1,2), sum), each=.Object@nsimPerOMFile[iom])
+      }
+
+      #All this stuff used to calculate Frep (summed over regions, mean over age and season)
+      NsoRbyPAYM   <- karray(NA, dim=c(.Object@npop,.Object@nages,allyears+1,.Object@nsubyears))
+      NsoRbyPAYM[] <- apply(NBefore, FUN=sum, MARGIN=c(1:4))
+
+      ZsoRbyPAYM       <- karray(NA, dim=c(.Object@npop,.Object@nages-2,allyears,.Object@nsubyears))
+      ZsoRbyPAYM[,,,1] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,2]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,1])
+      ZsoRbyPAYM[,,,2] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,3]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,2])
+      ZsoRbyPAYM[,,,3] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,4]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,3])
+      ZsoRbyPAYM[,,,4] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),2:(allyears + 1),1] / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,4])
+
+      FsoRbyPAYM <- ZsoRbyPAYM - karray(.Object@M[firstSimNum,,1:(.Object@nages-2),] / .Object@nsubyears, dim=c(.Object@npop,.Object@nages-2,allyears,.Object@nsubyears))
+
+      # 2:27 = true ages 1:26 (1:26 used by SS)
+      .Object@Frepss[firstSimNum:lastSimNum,] <- rep(apply(FsoRbyPAYM[,2:27,,], mean, MARGIN=c(3)), each=.Object@nsimPerOMFile[iom])
+
+      rm(NsoRbyPAYM)
+      rm(ZsoRbyPAYM)
+
+      #includes two abundance index karrays:
+      #Iobs is LL selected annual numbers aggregated over seasons and regions
+      #CPUEobs is partitioned by season and fishery (one fishery per region in initial YFT implementation)
+      NLLssByAYMR <- apply(NBefore[,keep(1:.Object@nages),keep(1:allyears),,], MARGIN=c(2,3,4,5), FUN=sum,na.rm=T)
+
+      # Longline-selected Numbers by area and season for partitioned abundance index
+      for(isubyears in 1:.Object@nsubyears)
+      {
+        for(iCPUE in 1:.Object@nCPUE)
+        {
+          .Object@NLLss[firstSimNum:lastSimNum,,isubyears,iCPUE] <- rep(apply(NLLssByAYMR[,,isubyears,.Object@CPUEFleetAreas[iCPUE]] * karray(rep(.Object@CPUEsel[firstSimNum,,iCPUE], times=allyears), dim=c(.Object@nages,allyears)), MARGIN=c(2), FUN=sum), each=.Object@nsimPerOMFile[iom])
+        }
+      }
+
+      .Object@NLLIss[firstSimNum:lastSimNum,] <- apply(.Object@NLLss[keep(firstSimNum:lastSimNum),,,], MARGIN=c(1,2), FUN=sum)
+
+      rm(NLLssByAYMR)
+
+      # some of these should be retained from SS, some could be recalculated with popdyn, but should check consistency
+      SSBss <- (ssMod$recruit$spawn_bio)  #ss yr=13-272 in tonnes
+      Recss <- (ssMod$recruit$exp_recr)   # in thousands
+
+      #SS F/FMSY - xxx need to resolve inconsistencies if series to be usefully merged
+      for (ymse in 1:.Object@nyears)
+      {
+        .Object@F_FMSYss[firstSimNum:lastSimNum,ymse] <- rep(mean(ssMod$Kobe$F.Fmsy[seasAsYrToMSEYr.f(seasAsYr=ssMod$Kobe$Year, endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas)==ymse]),.Object@nsimPerOMFile[iom])
+      }
+
+      #MSE works in individuals and kg (or 1000 individuals and tonnes)
+      #SS MSY, SSBMSY, etc (no obvious BMSY in SS outputs)
+      MSYss           <- 4.*ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "TotYield_MSY"]  #SS MSY is quarterly
+      SSBMSYss        <- ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "SSB_MSY"]
+      .Object@SSB0ss  <- c(.Object@SSB0ss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "SSB_Unfished"], .Object@nsimPerOMFile[iom]))
+      .Object@B0ss    <- c(.Object@B0ss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "TotBio_Unfished"], .Object@nsimPerOMFile[iom]))
+      .Object@FMSYss  <- c(.Object@FMSYss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "Fstd_MSY"], .Object@nsimPerOMFile[iom]))
+
+      # ABT MSE assumes TAC split envenly among quarters
+      # YFT q defined as 1 (or zero for fisheries that are time blocks that do not operate in 2014)
+      # YFT assumes a default annual distribution for Effort with a constant proportion by season, fishery and area strata
+      # This is true for aggregate annual TAC or TAE-managed fisheries, but not if there is a mix (or fishery-specific controls)
+      q <- karray(1.0, dim=c(.Object@nsimPerOMFile[iom], .Object@nfleets))
+
+      #YFT Effort and Catch-in-Mass distribution (by season region and fishery for one year)  for future effort/catch allocations
+      EByQtrLastYr  <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
+      ECurrent      <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
+      CMCurrent     <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
+
+      # Note that YFT fisheries are always defined on the basis of a specific region, such that
+      # fishery and area distinctions are redundant for many purposes. The F definitions below
+      # appear to be scaled relative to the season duration, such that:
+      # if duration is 3 months, ssMod$seasDuration = 0.25
+      # Fs reported as "F:_fleetnumber" and plotted are annuallized, but only applied for seasDuration
+      # meaning that the F value in absolute practical terms is F * seasduration!
+      # Ms and growth appear to be re-scaled separate to this, and the seasduration introduces an
+      # error in terms of mid-year sizes:
+      # i.e. midyearSize is t=t+0.125 rather than t+0.5
+
+      lastSSyrSeas   <- ssMod$endyr
+      numRecentSeas   <- .Object@recentPerLast - .Object@recentPerFirst + 1 # last timestep indicated by recentPerFirst=0
+
+      # calculate mean catch and effort by season and fleet
+      if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears ==0))
+      {
+        recentPeriodYrs    <- numRecentSeas/.Object@nsubyears
+
+        for (ifleets in 1:.Object@nfleets)
+        {
+          for (iy in 1:recentPeriodYrs)
+          {
+            for (im in 1:.Object@nsubyears)
+            {
+              r <- ssMod$"fleet_area"[ifleets]
+
+              # one row for each area, but fleet only operates in one area so can sum over areas
+              YrRows                      <- lastSSyrSeas - .Object@recentPerFirst - (recentPeriodYrs * OMd@nsubyears) + ((iy - 1) * OMd@nsubyears) + im
+              EByQtrLastYr[im,r,ifleets]  <- sum(ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)])
+              ECurrent[im,r,ifleets]      <- ECurrent[im,r,ifleets] + (1.0 / recentPeriodYrs) * EByQtrLastYr[im,r,ifleets]
+
+              yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
+                                              endSeasAsYr   = ssMod$endyr,
+                                              numSeas       = OMd@nsubyears,
+                                              endYr         = OMd@lastCalendarYr,
+                                              endSeas       = OMd@lastSeas,
+                                              firstSeasAsYr = OMd@firstSSYr,
+                                              firstSeas     = OMd@firstSeas) #generic
+
+              CMCurrent[im,r,ifleets] <- CMCurrent[im,r,ifleets] + sum((1.0 / recentPeriodYrs) *
+                                                                   colSums(CssTmp[,,yrSeas[1], yrSeas[2], r, ifleets]) *
+                                                                   colSums(.Object@Wt_age_mid[1,,,seasAsYrToMSEYrSeas.f(YrRows)[1]]))
             }
           }
         }
       }
-
-      .Object@mov[firstSimNum:lastSimNum,,,,,] <- mov
-
-  #readline(prompt="Warning: remove hi movvement rate test: ")
-  #.Object@mov[firstSimNum:lastSimNum,,,,,] <- mov*0+0.25 #uniform mixing test
-
-      #Initial distribution of N -not really relevant when adopting SS initial N
-      Idist <- karray(rep(0.0, times=(.Object@nsimPerOMFile[iom] * .Object@npop * .Object@nages * .Object@nareas)),
-                      c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas))
-
-      for (i in 1:30)
+      else #calculate mean catch and effort that remains constant over seasons
       {
-        #at least nages/nsubyears
-        for (mm in 1:.Object@nsubyears)
+        if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears !=0))
         {
-          #mean unfished equilibrium distribution (extra age calculaitons are redundant)
-          if (i == 1 & mm == 1)
-          {
-            Idist[,ip,1,] <- .Object@Recdist[keep(firstSimNum:lastSimNum),ip,]
-          }
-
-          Idist <- projection.domov(Ntemp=karray(Idist, dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas)),
-                                    movtemp=karray(.Object@mov[firstSimNum:lastSimNum,,,mm,,], dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas, .Object@nareas)))
-
-          for(ip in 1:.Object@npop)
-          {
-            Idist[,ip,2:(.Object@nages),] <- Idist[,ip,1:(.Object@nages - 1),]
-            Idist[,ip,1,]                 <- as.double(.Object@Recdist[keep(firstSimNum:lastSimNum),ip,])
-          }
+          readline("Warning: recent C&E dists are not seasonal because recentPeriod is not a multiple of nsubyears. Press ENTER to continue")
         }
-      }
 
-      if (Report)
-      {
-        plot(Idist[1,1,,1], col=1, type='l', ylim=c(0, max(Idist[1,1,,])), xlab="age", ylab="Prop", main="Init N Dist by region")
-        lines(Idist[1,1,,2], col=2)
-        lines(Idist[1,1,,3], col=3)
-        lines(Idist[1,1,,4], col=4)
-      }
-
-      .Object@Idist[firstSimNum:lastSimNum,,,] <- Idist
-    }  # end if (nareas > 1)
-
-    # R0 extracted from SS
-    R0ss                                <- ssMod$parameters[ssMod$parameters$Label == "SR_LN(R0)",]$Value  # in thousands
-    .Object@R0[firstSimNum:lastSimNum,] <- karray(rep(exp(R0ss), each=.Object@nsimPerOMFile[iom] * .Object@npop),
-                                                  dim=c(.Object@nsimPerOMFile[iom], .Object@npop))
-
-    #total numbers and spawning stock numbers
-    SSN     <- karray(NA, c(.Object@npop, .Object@nages, allyears + 1, .Object@nsubyears, .Object@nareas))
-    NBefore <- karray(NA, c(.Object@npop, .Object@nages, allyears + 1, .Object@nsubyears, .Object@nareas))
-
-    # Catch (numbers, then mass in MSE framework)
-    CssTmp <- karray(NA, c(.Object@npop, .Object@nages, allyears, .Object@nsubyears, .Object@nareas, .Object@nfleets))
-
-    #YFT input is in mass, except LL fleets in numbers (3,7,10,11,13) (though not #25 fresh tuna LL apparently?)
-    #check if catage in numbers or mass or mixed: appears to be in numbers:
-    #sum(ssMod$catage[ssMod$catage$Fleet==1 & ssMod$catage$Yr==272, 11:39])  = 936.9    # YFT.dat = 13598 = 15kg per gillnet fish
-    #sum(ssMod$catage[ssMod$catage$Fleet==3 & ssMod$catage$Yr==272, 11:39])  = 1.355    # YFT.dat = 1.355
-
-    # SS Catch
-    CssTmp[,,1:.Object@nyears,,,] <- 0.0
-
-    # SS Catch-at-age
-    CAss <- ssMod$catage[as.numeric(ssMod$catage$"Yr") >= OMd@firstSSYr,] # "Area"   "Fleet"  "Gender" "XX"     "XX"     "Morph"  "Yr"     "Seas"   "XX"     "Era"    "0"
-
-    for (i in 1:nrow(CAss))
-    {
-      #convert SS season (defined as year) to MSE year, season
-      yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr = CAss$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
-      nColOffset <- 10
-
-      #PAYMRF
-      CssTmp[1,1:nagesss,yrSeas[1],yrSeas[2],CAss$Area[i],CAss$Fleet[i]] <- as.numeric(CAss[i,nColOffset+1:nagesss])
-    }
-
-    .Object@Css[keep(firstSimNum:lastSimNum),,,]    <- rep(apply(CssTmp, c(1,3,6), sum), each=.Object@nsimPerOMFile[iom])
-    .Object@CAAFss[keep(firstSimNum:lastSimNum),,,] <- rep(apply(CssTmp, c(2,3,6), sum), each=.Object@nsimPerOMFile[iom])
-    .Object@CBss[keep(firstSimNum:lastSimNum),,]    <- rep(apply(CssTmp * karray(.Object@Wt_age_mid[1,,,], c(.Object@npop,.Object@nages, allyears,.Object@nsubyears,.Object@nareas,.Object@nfleets)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
-
-    #SS N(age)
-    # YFT Nss <- ssMod$natage[as.numeric(ssMod$natage$"Yr")>=101 & ssMod$natage$"Beg/Mid"=="B",]  #in thousands
-
-    Nss <- ssMod$natage[as.numeric(ssMod$natage$"Yr") >= OMd@firstSSYr & ssMod$natage$"Beg/Mid"=="B",]  #in thousands
-
-    for (i in 1:nrow(Nss))
-    {
-      #convert SS season (defined as year) to MSE year, season
-      yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr=Nss$Yr[i], endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas) #generic
-
-      nColOffset <- 11
-
-      NBefore[,1:nagesss,yrSeas[1],yrSeas[2],Nss$Area[i]] <- as.numeric(Nss[i,nColOffset + 1:nagesss])
-      SSN[,,yrSeas[1],yrSeas[2],Nss$Area[i]] <- NBefore[,,yrSeas[1],yrSeas[2],Nss$Area[i]] * .Object@mat[firstSimNum,,,yrSeas[1]]
-    }
-
-    .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- rep(NBefore[,,.Object@nyears,1,], each=.Object@nsimPerOMFile[iom])
-
-    #add noise to NBeforeInit
-    CVMatBySPA  <- rep(.Object@NInitCV * exp(-.Object@NInitCVdecay * (0:(.Object@nages - 1))), each=.Object@nsimPerOMFile[iom] * .Object@npop)
-    CVMatBySPAR <- karray(rep(CVMatBySPA, times=.Object@nareas), dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas))
-    Ndevs       <- exp(CVMatBySPAR * rnorm(prod(dim(.Object@NBeforeInit[keep(firstSimNum:lastSimNum),,,]))) - 0.5 * CVMatBySPAR*CVMatBySPAR)
-
-    .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- karray(.Object@NBeforeInit[keep(firstSimNum:lastSimNum),,,], dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, .Object@nareas)) * Ndevs
-
-    .Object@SSBAss[firstSimNum:lastSimNum,,]       <- rep(apply(karray(SSN[,,keep(1:allyears),.Object@nsubyears,], c(.Object@npop,.Object@nages,allyears,.Object@nareas)) * karray(.Object@Wt_age[firstSimNum,,,1:allyears], c(.Object@npop,.Object@nages,allyears,.Object@nareas)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
-
-    # Bss mean over seasons
-    #.Object@Bss[firstSimNum:lastSimNum,,]          <- rep(apply(NBefore[,,keep(1:allyears),,] * karray(.Object@Wt_age[firstSimNum,,,keep(1:allyears)], c(.Object@npop,.Object@nages,allyears,.Object@nsubyears,.Object@nareas)), c(1,3), sum), each=.Object@nsimPerOMFile[iom])
-    BbyM                                           <- apply(NBefore[,,keep(1:allyears),,] * karray(.Object@Wt_age[firstSimNum,,,keep(1:allyears)], c(.Object@npop,.Object@nages,allyears,.Object@nsubyears,.Object@nareas)), c(1,3,4), sum)
-    BbyY                                           <- apply(BbyM, c(1,2), mean)
-    .Object@Bss[firstSimNum:lastSimNum,,]          <- rep(BbyY, each=.Object@nsimPerOMFile[iom])
-    .Object@Recss[firstSimNum:lastSimNum,,]        <- rep(apply(NBefore[,1,keep(1:allyears),,], c(2), sum), each=.Object@nsimPerOMFile[iom])
-
-    for (yyy in 1:allyears)
-    {
-      FirstIdx <- (yyy - 1) * .Object@nsubyears + 1
-      LastIdx  <- yyy * .Object@nsubyears
-
-      .Object@RecYrQtrss[firstSimNum:lastSimNum,,FirstIdx:LastIdx] <- rep(apply(NBefore[,1,yyy,keep(1:.Object@nsubyears),], c(1,2), sum), each=.Object@nsimPerOMFile[iom])
-    }
-
-    #All this stuff used to calculate Frep (summed over regions, mean over age and season)
-    NsoRbyPAYM   <- karray(NA, dim=c(.Object@npop,.Object@nages,allyears+1,.Object@nsubyears))
-    NsoRbyPAYM[] <- apply(NBefore, FUN=sum, MARGIN=c(1:4))
-
-    ZsoRbyPAYM       <- karray(NA, dim=c(.Object@npop,.Object@nages-2,allyears,.Object@nsubyears))
-    ZsoRbyPAYM[,,,1] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,2]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,1])
-    ZsoRbyPAYM[,,,2] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,3]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,2])
-    ZsoRbyPAYM[,,,3] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),1:allyears,4]       / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,3])
-    ZsoRbyPAYM[,,,4] <- -log(NsoRbyPAYM[,2:(.Object@nages - 1),2:(allyears + 1),1] / NsoRbyPAYM[,1:(.Object@nages - 2),1:allyears,4])
-
-    FsoRbyPAYM <- ZsoRbyPAYM - karray(.Object@M[firstSimNum,,1:(.Object@nages-2),] / .Object@nsubyears, dim=c(.Object@npop,.Object@nages-2,allyears,.Object@nsubyears))
-
-    # 2:27 = true ages 1:26 (1:26 used by SS)
-    .Object@Frepss[firstSimNum:lastSimNum,] <- rep(apply(FsoRbyPAYM[,2:27,,], mean, MARGIN=c(3)), each=.Object@nsimPerOMFile[iom])
-
-    rm(NsoRbyPAYM)
-    rm(ZsoRbyPAYM)
-
-    #includes two abundance index karrays:
-    #Iobs is LL selected annual numbers aggregated over seasons and regions
-    #CPUEobs is partitioned by season and fishery (one fishery per region in initial YFT implementation)
-    NLLssByAYMR <- apply(NBefore[,keep(1:.Object@nages),keep(1:allyears),,], MARGIN=c(2,3,4,5), FUN=sum,na.rm=T)
-
-    # Longline-selected Numbers by area and season for partitioned abundance index
-    for(isubyears in 1:.Object@nsubyears)
-    {
-      for(iCPUE in 1:.Object@nCPUE)
-      {
-        .Object@NLLss[firstSimNum:lastSimNum,,isubyears,iCPUE] <- rep(apply(NLLssByAYMR[,,isubyears,.Object@CPUEFleetAreas[iCPUE]] * karray(rep(.Object@CPUEsel[firstSimNum,,iCPUE], times=allyears), dim=c(.Object@nages,allyears)), MARGIN=c(2), FUN=sum), each=.Object@nsimPerOMFile[iom])
-      }
-    }
-
-    .Object@NLLIss[firstSimNum:lastSimNum,] <- apply(.Object@NLLss[keep(firstSimNum:lastSimNum),,,], MARGIN=c(1,2), FUN=sum)
-
-    rm(NLLssByAYMR)
-
-    # some of these should be retained from SS, some could be recalculated with popdyn, but should check consistency
-    SSBss <- (ssMod$recruit$spawn_bio)  #ss yr=13-272 in tonnes
-    Recss <- (ssMod$recruit$exp_recr)   # in thousands
-
-    #SS F/FMSY - xxx need to resolve inconsistencies if series to be usefully merged
-    for (ymse in 1:.Object@nyears)
-    {
-      .Object@F_FMSYss[firstSimNum:lastSimNum,ymse] <- rep(mean(ssMod$Kobe$F.Fmsy[seasAsYrToMSEYr.f(seasAsYr=ssMod$Kobe$Year, endSeasAsYr = ssMod$endyr, numSeas = OMd@nsubyears, endYr = OMd@lastCalendarYr, endSeas = OMd@lastSeas, firstSeasAsYr = OMd@firstSSYr, firstSeas = OMd@firstSeas)==ymse]),.Object@nsimPerOMFile[iom])
-    }
-
-    #MSE works in individuals and kg (or 1000 individuals and tonnes)
-    #SS MSY, SSBMSY, etc (no obvious BMSY in SS outputs)
-    MSYss           <- 4.*ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "TotYield_MSY"]  #SS MSY is quarterly
-    SSBMSYss        <- ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "SSB_MSY"]
-    .Object@SSB0ss  <- c(.Object@SSB0ss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "SSB_Unfished"], .Object@nsimPerOMFile[iom]))
-    .Object@B0ss    <- c(.Object@B0ss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "TotBio_Unfished"], .Object@nsimPerOMFile[iom]))
-    .Object@FMSYss  <- c(.Object@FMSYss, rep(ssMod$derived_quants$Value[ssMod$derived_quants$LABEL == "Fstd_MSY"], .Object@nsimPerOMFile[iom]))
-
-    # ABT MSE assumes TAC split envenly among quarters
-    # YFT q defined as 1 (or zero for fisheries that are time blocks that do not operate in 2014)
-    # YFT assumes a default annual distribution for Effort with a constant proportion by season, fishery and area strata
-    # This is true for aggregate annual TAC or TAE-managed fisheries, but not if there is a mix (or fishery-specific controls)
-    q <- karray(1.0, dim=c(.Object@nsimPerOMFile[iom], .Object@nfleets))
-
-    #YFT Effort and Catch-in-Mass distribution (by season region and fishery for one year)  for future effort/catch allocations
-    EByQtrLastYr  <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
-    ECurrent      <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
-    CMCurrent     <- karray(0.0, c(.Object@nsubyears, .Object@nareas, .Object@nfleets))
-
-    # Note that YFT fisheries are always defined on the basis of a specific region, such that
-    # fishery and area distinctions are redundant for many purposes. The F definitions below
-    # appear to be scaled relative to the season duration, such that:
-    # if duration is 3 months, ssMod$seasDuration = 0.25
-    # Fs reported as "F:_fleetnumber" and plotted are annuallized, but only applied for seasDuration
-    # meaning that the F value in absolute practical terms is F * seasduration!
-    # Ms and growth appear to be re-scaled separate to this, and the seasduration introduces an
-    # error in terms of mid-year sizes:
-    # i.e. midyearSize is t=t+0.125 rather than t+0.5
-
-    lastSSyrSeas   <- ssMod$endyr
-    numRecentSeas   <- .Object@recentPerLast - .Object@recentPerFirst + 1 # last timestep indicated by recentPerFirst=0
-
-    # calculate mean catch and effort by season and fleet
-    if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears ==0))
-    {
-      recentPeriodYrs    <- numRecentSeas/.Object@nsubyears
-
-      for (ifleets in 1:.Object@nfleets)
-      {
-        for (iy in 1:recentPeriodYrs)
+        for (ifleets in 1:.Object@nfleets)
         {
-          for (im in 1:.Object@nsubyears)
+          for (iseason in .Object@recentPerLast:.Object@recentPerFirst)
           {
             r <- ssMod$"fleet_area"[ifleets]
-
             # one row for each area, but fleet only operates in one area so can sum over areas
-            YrRows                      <- lastSSyrSeas - .Object@recentPerFirst - (recentPeriodYrs * OMd@nsubyears) + ((iy - 1) * OMd@nsubyears) + im
-            EByQtrLastYr[im,r,ifleets]  <- sum(ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)])
-            ECurrent[im,r,ifleets]      <- ECurrent[im,r,ifleets] + (1.0 / recentPeriodYrs) * EByQtrLastYr[im,r,ifleets]
+            YrRows <- lastSSyrSeas - iseason
+            EThisSeason <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)]
+
+            ECurrent[1:OMd@nsubyears,r,ifleets] <- ECurrent[1:OMd@nsubyears,r,ifleets] + (1.0 /numRecentSeas) * EThisSeason
 
             yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
                                             endSeasAsYr   = ssMod$endyr,
@@ -1025,90 +1085,57 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
                                             firstSeasAsYr = OMd@firstSSYr,
                                             firstSeas     = OMd@firstSeas) #generic
 
-            CMCurrent[im,r,ifleets] <- CMCurrent[im,r,ifleets] + sum((1.0 / recentPeriodYrs) *
-                                                                 colSums(CssTmp[,,yrSeas[1], yrSeas[2], r, ifleets]) *
-                                                                 colSums(.Object@Wt_age_mid[1,,,seasAsYrToMSEYrSeas.f(YrRows)[1]]))
+            CMCurrent[1:OMd@nsubyears,r,ifleets] <- CMCurrent[1:OMd@nsubyears,r,ifleets] + sum(1.0 / (numRecentSeas) *
+                                                                                           colSums(CssTmp[,,yrSeas[1], yrSeas[2], r, ifleets]) *
+                                                                                           colSums(.Object@Wt_age_mid[1,,,seasAsYrToMSEYrSeas.f(YrRows)[1]]))
           }
         }
       }
-    }
-    else #calculate mean catch and effort that remains constant over seasons
-    {
-      if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears !=0))
-      {
-        readline("Warning: recent C&E dists are not seasonal because recentPeriod is not a multiple of nsubyears. Press ENTER to continue")
-      }
 
-      for (ifleets in 1:.Object@nfleets)
+      rm(CssTmp)
+      rm(SSN)
+      rm(NBefore)
+
+      EByQtrLastYr  <- EByQtrLastYr * ssMod$seasdurations      #see note aboive
+      ECurrent      <- ECurrent * ssMod$seasdurations
+
+      #plot the F by fleet time series to see if the SS output is sensible
+      par(mfrow=c(1,1), ask=F)
+
+      for (ifleets in c(1:.Object@nfleets))
       {
-        for (iseason in .Object@recentPerLast:.Object@recentPerFirst)
+        f <- "F:_" %&% ifleets
+        y <- "Yr"
+        d <- ssMod$timeseries[, c(f,y) ]
+        d <- d[d[,1] > 0,] * ssMod$seasdurations
+
+        if (Report)
         {
-          r <- ssMod$"fleet_area"[ifleets]
-          # one row for each area, but fleet only operates in one area so can sum over areas
-          YrRows <- lastSSyrSeas - iseason
-          EThisSeason <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)]
-
-          ECurrent[1:OMd@nsubyears,r,ifleets] <- ECurrent[1:OMd@nsubyears,r,ifleets] + (1.0 /numRecentSeas) * EThisSeason
-
-          yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
-                                          endSeasAsYr   = ssMod$endyr,
-                                          numSeas       = OMd@nsubyears,
-                                          endYr         = OMd@lastCalendarYr,
-                                          endSeas       = OMd@lastSeas,
-                                          firstSeasAsYr = OMd@firstSSYr,
-                                          firstSeas     = OMd@firstSeas) #generic
-
-          CMCurrent[1:OMd@nsubyears,r,ifleets] <- CMCurrent[1:OMd@nsubyears,r,ifleets] + sum(1.0 / (numRecentSeas) *
-                                                                                         colSums(CssTmp[,,yrSeas[1], yrSeas[2], r, ifleets]) *
-                                                                                         colSums(.Object@Wt_age_mid[1,,,seasAsYrToMSEYrSeas.f(YrRows)[1]]))
+          if (ifleets == 1)
+          {
+            plot( d[,2],d[,1], type='l', ylim=c(0,2.5))
+          }
+          else
+          {
+            lines( d[,2],d[,1],col=ifleets)
+          }
         }
       }
-    }
 
-    rm(CssTmp)
-    rm(SSN)
-    rm(NBefore)
+      .Object@q[firstSimNum:lastSimNum,] <- q
 
-    EByQtrLastYr  <- EByQtrLastYr * ssMod$seasdurations      #see note aboive
-    ECurrent      <- ECurrent * ssMod$seasdurations
-
-    #plot the F by fleet time series to see if the SS output is sensible
-    par(mfrow=c(1,1), ask=F)
-
-    for (ifleets in c(1:.Object@nfleets))
-    {
-      f <- "F:_" %&% ifleets
-      y <- "Yr"
-      d <- ssMod$timeseries[, c(f,y) ]
-      d <- d[d[,1] > 0,] * ssMod$seasdurations
-
-      if (Report)
+      for (isim in firstSimNum:lastSimNum)
       {
-        if (ifleets == 1)
-        {
-          plot( d[,2],d[,1], type='l', ylim=c(0,2.5))
-        }
-        else
-        {
-          lines( d[,2],d[,1],col=ifleets)
-        }
+        .Object@ECurrent[isim,,,]     <- ECurrent
+        .Object@CMCurrent[isim,,,]    <- CMCurrent
+        .Object@EByQtrLastYr[isim,,,] <- EByQtrLastYr
       }
-    }
 
-    .Object@q[firstSimNum:lastSimNum,] <- q
-
-    for (isim in firstSimNum:lastSimNum)
-    {
-      .Object@ECurrent[isim,,,]     <- ECurrent
-      .Object@CMCurrent[isim,,,]    <- CMCurrent
-      .Object@EByQtrLastYr[isim,,,] <- EByQtrLastYr
+      .Object@MSYss    <- c(.Object@MSYss,   rep(MSYss, .Object@nsimPerOMFile[iom]))
+      .Object@SSBMSYss <- c(.Object@SSBMSYss,rep(SSBMSYss, .Object@nsimPerOMFile[iom]))
     }
 
     MSY_projection_sims[iom,] <- c(firstSimNum, lastSimNum)
-
-    .Object@MSYss    <- c(.Object@MSYss,   rep(MSYss, .Object@nsimPerOMFile[iom]))
-    .Object@SSBMSYss <- c(.Object@SSBMSYss,rep(SSBMSYss, .Object@nsimPerOMFile[iom]))
-
   } #iom loop
 
   print("Doing MSY projections")
@@ -1125,32 +1152,35 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
   for(iom in 1:nOMfiles)
   {
-    indices <- seq(MSY_projection_sims[iom,1], MSY_projection_sims[iom,2])
-
-    if (.Object@UseMSYss==0)
+    if (MSY_projection_sims[iom,2] >= MSY_projection_sims[iom,1])
     {
-      .Object@MSY[indices]         <- MSYrefs[1,iom]
-      .Object@BMSY[indices]        <- MSYrefs[2,iom]
-      .Object@VBMSY[indices]       <- MSYrefs[3,iom]
-      .Object@SSBMSY[indices]      <- MSYrefs[4,iom]
-      .Object@UMSY[indices]        <- MSYrefs[5,iom]
-      .Object@FMSY1[indices]       <- MSYrefs[6,iom]
-      .Object@SSBMSY_SSB0[indices] <- MSYrefs[7,iom]
-      .Object@SSB0[indices]        <- MSYrefs[8,iom]
-      .Object@B0[indices]          <- MSYrefs[9,iom]
+      indices <- seq(MSY_projection_sims[iom,1], MSY_projection_sims[iom,2])
 
-    }
-    else
-    {
-      .Object@MSY[indices]         <- .Object@MSYss[iom]
-      .Object@BMSY[indices]        <- NA #.Object@BMSYss[iom]
-      .Object@VBMSY[indices]       <- NA
-      .Object@SSBMSY[indices]      <- .Object@SSBMSYss[iom]
-      .Object@UMSY[indices]        <- NA
-      .Object@FMSY1[indices]       <- .Object@FMSYss[iom]
-      .Object@SSBMSY_SSB0[indices] <- .Object@SSBMSYss[iom]/.Object@SSB0ss[iom]
-      .Object@SSB0[indices]        <- .Object@SSB0ss[iom]
-      .Object@B0[indices]          <- .Object@B0ss[iom]
+      if (.Object@UseMSYss==0)
+      {
+        .Object@MSY[indices]         <- MSYrefs[1,iom]
+        .Object@BMSY[indices]        <- MSYrefs[2,iom]
+        .Object@VBMSY[indices]       <- MSYrefs[3,iom]
+        .Object@SSBMSY[indices]      <- MSYrefs[4,iom]
+        .Object@UMSY[indices]        <- MSYrefs[5,iom]
+        .Object@FMSY1[indices]       <- MSYrefs[6,iom]
+        .Object@SSBMSY_SSB0[indices] <- MSYrefs[7,iom]
+        .Object@SSB0[indices]        <- MSYrefs[8,iom]
+        .Object@B0[indices]          <- MSYrefs[9,iom]
+
+      }
+      else
+      {
+        .Object@MSY[indices]         <- .Object@MSYss[iom]
+        .Object@BMSY[indices]        <- NA #.Object@BMSYss[iom]
+        .Object@VBMSY[indices]       <- NA
+        .Object@SSBMSY[indices]      <- .Object@SSBMSYss[iom]
+        .Object@UMSY[indices]        <- NA
+        .Object@FMSY1[indices]       <- .Object@FMSYss[iom]
+        .Object@SSBMSY_SSB0[indices] <- .Object@SSBMSYss[iom]/.Object@SSB0ss[iom]
+        .Object@SSB0[indices]        <- .Object@SSB0ss[iom]
+        .Object@B0[indices]          <- .Object@B0ss[iom]
+      }
     }
   }
 
@@ -2199,61 +2229,64 @@ initModelParameterVariables <- function(OMList, nsimPerOMFile)
       re <- regexec("([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)_([[:alnum:]]+)", grid_name)
     }
 
-    if ((length(re) == 1) && (length(re[[1]]) >= 5))
+    if (nsimPerOMFile[cm] > 0)
     {
-      if (length(re[[1]]) == 5)
+      if ((length(re) == 1) && (length(re[[1]]) >= 5))
       {
-        sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
-        h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
-        M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
-        q_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
-        t_name  <- NA
+        if (length(re[[1]]) == 5)
+        {
+          sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
+          h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
+          M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
+          q_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
+          t_name  <- NA
 
-      } else
-      {
-        sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
-        h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
-        M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
-        t_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
-        q_name  <- substr(grid_name, re[[1]][6], re[[1]][6] + attr(re[[1]], "match.length")[6] - 1)
-      }
+        } else
+        {
+          sp_name <- substr(grid_name, re[[1]][2], re[[1]][2] + attr(re[[1]], "match.length")[2] - 1)
+          h_name  <- substr(grid_name, re[[1]][3], re[[1]][3] + attr(re[[1]], "match.length")[3] - 1)
+          M_name  <- substr(grid_name, re[[1]][4], re[[1]][4] + attr(re[[1]], "match.length")[4] - 1)
+          t_name  <- substr(grid_name, re[[1]][5], re[[1]][5] + attr(re[[1]], "match.length")[5] - 1)
+          q_name  <- substr(grid_name, re[[1]][6], re[[1]][6] + attr(re[[1]], "match.length")[6] - 1)
+        }
 
-      if (!(sp_name %in% names(sp_names)))
-      {
-        sp_names[[sp_name]] <- length(sp_names) + 1
-      }
+        if (!(sp_name %in% names(sp_names)))
+        {
+          sp_names[[sp_name]] <- length(sp_names) + 1
+        }
 
-      if (!(h_name %in% names(h_names)))
-      {
-        h_names[[h_name]] <- length(h_names) + 1
-      }
+        if (!(h_name %in% names(h_names)))
+        {
+          h_names[[h_name]] <- length(h_names) + 1
+        }
 
-      if (!(M_name %in% names(M_names)))
-      {
-        M_names[[M_name]] <- length(M_names) + 1
-      }
+        if (!(M_name %in% names(M_names)))
+        {
+          M_names[[M_name]] <- length(M_names) + 1
+        }
 
-      if (!is.na(t_name) && !(t_name %in% names(t_names)))
-      {
-        t_names[[t_name]] <- length(t_names) + 1
-      }
+        if (!is.na(t_name) && !(t_name %in% names(t_names)))
+        {
+          t_names[[t_name]] <- length(t_names) + 1
+        }
 
-      if (!(q_name %in% names(q_names)))
-      {
-        q_names[[q_name]] <- length(q_names) + 1
-      }
+        if (!(q_name %in% names(q_names)))
+        {
+          q_names[[q_name]] <- length(q_names) + 1
+        }
 
-      nsim_start <- nsim_end + 1
-      nsim_end   <- nsim_start + nsimPerOMFile[cm] - 1
+        nsim_start <- nsim_end + 1
+        nsim_end   <- nsim_start + nsimPerOMFile[cm] - 1
 
-      sp_idx[nsim_start:nsim_end] <- rep(sp_names[[sp_name]], times = nsimPerOMFile[cm])
-      h_idx[nsim_start:nsim_end]  <- rep(h_names[[h_name]], times = nsimPerOMFile[cm])
-      M_idx[nsim_start:nsim_end]  <- rep(M_names[[M_name]], times = nsimPerOMFile[cm])
-      q_idx[nsim_start:nsim_end]  <- rep(q_names[[q_name]], times = nsimPerOMFile[cm])
+        sp_idx[nsim_start:nsim_end] <- rep(sp_names[[sp_name]], times = nsimPerOMFile[cm])
+        h_idx[nsim_start:nsim_end]  <- rep(h_names[[h_name]], times = nsimPerOMFile[cm])
+        M_idx[nsim_start:nsim_end]  <- rep(M_names[[M_name]], times = nsimPerOMFile[cm])
+        q_idx[nsim_start:nsim_end]  <- rep(q_names[[q_name]], times = nsimPerOMFile[cm])
 
-      if (!is.na(t_name))
-      {
-        t_idx[nsim_start:nsim_end] <- rep(t_names[[t_name]], times = nsimPerOMFile[cm])
+        if (!is.na(t_name))
+        {
+          t_idx[nsim_start:nsim_end] <- rep(t_names[[t_name]], times = nsimPerOMFile[cm])
+        }
       }
 
     } else
