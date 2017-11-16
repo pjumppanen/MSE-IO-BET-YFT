@@ -438,7 +438,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
   {
     # do nothing. Default behaviour if modelWeight unspecified.
   }
-  else if (length(OMd@modelWeight) == length(OMd@nsimPerOMFile))
+  else if (length(OMd@modelWeight) == length(OMd@OMList))
   {
     if (OMd@totalSims < 1)
     {
