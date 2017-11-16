@@ -440,9 +440,9 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
   }
   else if (length(OMd@modelWeight) == length(OMd@nsimPerOMFile))
   {
-    if (OMd@totalSims < length(OMd@modelWeight))
+    if (OMd@totalSims < 1)
     {
-      print("Error: model definition totalSims is too small. It must be at least length(OMd@modelWeight) in value")
+      print("Error: model definition totalSims is too small. It must be at least 1")
       stop()
     }
 
