@@ -43,9 +43,19 @@ setClass("OMd",representation(
                ReccvRin         = "numeric",
                NInitCV          = "numeric",   # additional noise on initial N(a) (CV on age 1)
                NInitCVdecay     = "numeric",   # exponential decay on CV on initial N(a) = exp(NinitCV*(a-1))
-               selExpRange      = "numeric",   # sel temporal variability exponentoscillates with a sin wave rangeing between these values
+               selExpRange      = "numeric",   # sel temporal variability exponent oscillates with a sin wave ranging between these values
                selAgeRange      = "numeric",   # 0=no age shift, 2 means (discretized) sine wave shift of sel vector between - 2 and + 2 age class
                selWLRange       = "karray",    # sel temporal variability wavelength range (0.0625 = quarter wavelength in 25 years, 0.5=2 full cycles in 25 years
+
+               MScale           = "numeric",   # sin wave scaling applied to M (multiplied by). Max value = MScale, min value = 1/MScale.
+               MLambda          = "numeric",   # wavelength of sin wave scaling applied to M in years.
+               MPhi             = "numeric",   # phase of sin wave scaling applied to M. 1 equals full period offset.
+                                               # Scaling given by:
+                                               #
+                                               #   (MScale + (1 / MScale)) / 2 + (MScale - (1 / MScale)) * sin(2 * pi * (((y-y0) / MLambda) + MPhi))
+                                               #
+                                               # MScale, MLambda and MPhi can be scalar, in which case they apply equally to all age classes, or
+                                               # a vector of length nages which defines individual behaviour for each age classs.
 
                nsubyears        = "integer",
                firstCalendarYr  = "integer",
@@ -101,6 +111,9 @@ setClass("OMd",representation(
                tuneLogDomain    = "numeric"    # log base 10 of search domain for tuning solution. It is a log domain to improve search dynamic range
              ),
              prototype = list(
+               MScale        = 1,
+               MLambda       = 1,
+               MPhi          = 0,
                tuneTol       = 0.01,
                tuneLogDomain = c(-3,0.5),
                RecScale      = karray(c(1)),
@@ -587,6 +600,75 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
       #SS reported M(last age)=NA for some reason
       .Object@M[firstSimNum:lastSimNum,, .Object@nages,] <- .Object@M[keep(firstSimNum:lastSimNum),, .Object@nages - 1, ]
+
+      # --- set up M variability -------
+      if (length(OMd@MScale) > 1)
+      {
+        if (length(OMd@MScale) != .Object@nages)
+        {
+          print("Error: model definition MScale vector should be nages in length")
+          stop()
+        }
+
+        if (any(OMd@MScale < 1))
+        {
+          print("Error: model definition MScale values should be >= 1")
+          stop()
+        }
+
+        if (length(OMd@MLambda) != .Object@nages)
+        {
+          print("Error: model definition MLambda vector should be nages in length")
+          stop()
+        }
+
+        if (any(OMd@MLambda <= 0))
+        {
+          print("Error: model definition MLambda values should be > 0")
+          stop()
+        }
+
+        if (length(OMd@MPhi) != .Object@nages)
+        {
+          print("Error: model definition MPhi vector should be nages in length")
+          stop()
+        }
+
+        for(Yr in .Object@nyears:allyears)
+        {
+          .Object@M[firstSimNum:lastSimNum,,,Yr] <- .Object@M[firstSimNum:lastSimNum,,,Yr] * karray(rep(((OMd@MScale + (1 / OMd@MScale)) / 2) + ((OMd@MScale - (1 / OMd@MScale)) / 2) * sin(2 * pi * (((Yr - .Object@nyears) / OMd@MLambda) + OMd@MPhi)),
+                                                                                                        each=.Object@nsimPerOMFile[iom] * .Object@npop),
+                                                                                                    dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages))
+        }
+      }
+      else
+      {
+        if ((length(OMd@MLambda) != 1) || (length(OMd@MPhi) != 1))
+        {
+          print("Error: model definition MLambda and MPhi must be scalar if MScale is scalar")
+          stop()
+        }
+
+        if (OMd@MScale > 1)
+        {
+          if (OMd@MLambda <= 0)
+          {
+            print("Error: model definition MLambda values should be > 0")
+            stop()
+          }
+
+          Yrs <- .Object@nyears:allyears
+
+          .Object@M[firstSimNum:lastSimNum,,,Yrs] <- .Object@M[firstSimNum:lastSimNum,,,Yrs] * karray(rep(((OMd@MScale + (1 / OMd@MScale)) / 2) + ((OMd@MScale - (1 / OMd@MScale)) / 2) * sin(2 * pi * (((Yrs - .Object@nyears) / OMd@MLambda) + OMd@MPhi)),
+                                                                                                          each=.Object@nages * .Object@nsimPerOMFile[iom] * .Object@npop),
+                                                                                                      dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, length(Yrs)))
+        }
+        else if (OMd@MScale < 1)
+        {
+          print("Error: model definition MScale value should be >= 1")
+          stop()
+        }
+      }
 
       # ---- Stock-recruit relationships -------
       .Object@SRrel <- as.integer(1) #BH: steepness ssMod$parameters$Label="SR_BH_steep"
