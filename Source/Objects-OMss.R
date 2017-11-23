@@ -57,6 +57,16 @@ setClass("OMd",representation(
                                                # MScale, MLambda and MPhi can be scalar, in which case they apply equally to all age classes, or
                                                # a vector of length nages which defines individual behaviour for each age classs.
 
+               LenAgeScale      = "numeric",   # sin wave scaling applied to length-age relationship (multiplied by). Max value = LenAgeScale, min value = 1/LenAgeScale.
+               LenAgeLambda     = "numeric",   # wavelength of sin wave scaling applied to length-age in years.
+               LenAgePhi        = "numeric",   # phase of sin wave scaling applied to length-age. 1 equals full period offset.
+                                               # Scaling given by:
+                                               #
+                                               #   (LenAgeScale + (1 / LenAgeScale)) / 2 + (LenAgeScale - (1 / LenAgeScale)) * sin(2 * pi * (((y-y0) / LenAgeLambda) + LenAgePhi))
+                                               #
+                                               # LenAgeScale, LenAgeLambda and LenAgePhi can be scalar, in which case they apply equally to all age classes, or
+                                               # a vector of length nages which defines individual behaviour for each age classs.
+
                nsubyears        = "integer",
                firstCalendarYr  = "integer",
                lastCalendarYr   = "integer",
@@ -114,6 +124,9 @@ setClass("OMd",representation(
                MScale        = 1,
                MLambda       = 1,
                MPhi          = 0,
+               LenAgeScale   = 1,
+               LenAgeLambda  = 1,
+               LenAgePhi     = 0,
                tuneTol       = 0.01,
                tuneLogDomain = c(-3,0.5),
                RecScale      = karray(c(1)),
@@ -123,7 +136,85 @@ setClass("OMd",representation(
 )
 
 
+#------------------------------------------------------------------------------
 
+createVariability <- function(Prefix, nsims, Obj, OMd)
+{
+  Yrs         <- 0:Obj@proyears
+  Variability <- karray(1, dim=c(nsims, Obj@npop, Obj@nages, length(Yrs)))
+
+  Scale  <- slot(OMd, paste(Prefix, "Scale",  sep=""))
+  Lambda <- slot(OMd, paste(Prefix, "Lambda", sep=""))
+  Phi    <- slot(OMd, paste(Prefix, "Phi",    sep=""))
+
+  if (length(Scale) > 1)
+  {
+    if (length(Scale) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Scale vector should be nages in length", sep=""))
+      stop()
+    }
+
+    if (any(Scale < 1))
+    {
+      print(paste("Error: model definition ", Prefix, "Scale values should be >= 1", sep=""))
+      stop()
+    }
+
+    if (length(Lambda) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda vector should be nages in length", sep=""))
+      stop()
+    }
+
+    if (any(Lambda <= 0))
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda values should be > 0", sep=""))
+      stop()
+    }
+
+    if (length(Phi) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Phi vector should be nages in length", sep=""))
+      stop()
+    }
+
+    for(Yr in Yrs)
+    {
+      Variability[,,,Yr + 1] <- karray(rep(((Scale + (1 / Scale)) / 2) + ((Scale - (1 / Scale)) / 2) * sin(2 * pi * ((Yr / Lambda) + Phi)),
+                                           each=nsims * Obj@npop),
+                                       dim=c(nsims, Obj@npop, Obj@nages))
+    }
+  }
+  else
+  {
+    if ((length(Lambda) != 1) || (length(Phi) != 1))
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda and ", Prefix, "Phi must be scalar if ", Prefix, "Scale is scalar", sep=""))
+      stop()
+    }
+
+    if (Scale > 1)
+    {
+      if (Lambda <= 0)
+      {
+        print(paste("Error: model definition ", Prefix, "Lambda values should be > 0", sep=""))
+        stop()
+      }
+
+      Variability <- karray(rep(((Scale + (1 / Scale)) / 2) + ((Scale - (1 / Scale)) / 2) * sin(2 * pi * ((Yrs / Lambda) + Phi)),
+                                each=Obj@nages * nsims * Obj@npop),
+                            dim=c(nsims, Obj@npop, Obj@nages, length(Yrs)))
+    }
+    else if (Scale < 1)
+    {
+      print(paste("Error: model definition ", Prefix, "Scale value should be >= 1", sep=""))
+      stop()
+    }
+  }
+
+  return (Variability)
+}
 
 
 #------------------- Operating model object -------------------------------------------------------------------------------------
@@ -602,73 +693,10 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       .Object@M[firstSimNum:lastSimNum,, .Object@nages,] <- .Object@M[keep(firstSimNum:lastSimNum),, .Object@nages - 1, ]
 
       # --- set up M variability -------
-      if (length(OMd@MScale) > 1)
-      {
-        if (length(OMd@MScale) != .Object@nages)
-        {
-          print("Error: model definition MScale vector should be nages in length")
-          stop()
-        }
+      MVariability <- createVariability("M", .Object@nsimPerOMFile[iom], .Object, OMd)
+      Yrs          <- .Object@nyears:allyears
 
-        if (any(OMd@MScale < 1))
-        {
-          print("Error: model definition MScale values should be >= 1")
-          stop()
-        }
-
-        if (length(OMd@MLambda) != .Object@nages)
-        {
-          print("Error: model definition MLambda vector should be nages in length")
-          stop()
-        }
-
-        if (any(OMd@MLambda <= 0))
-        {
-          print("Error: model definition MLambda values should be > 0")
-          stop()
-        }
-
-        if (length(OMd@MPhi) != .Object@nages)
-        {
-          print("Error: model definition MPhi vector should be nages in length")
-          stop()
-        }
-
-        for(Yr in .Object@nyears:allyears)
-        {
-          .Object@M[firstSimNum:lastSimNum,,,Yr] <- .Object@M[firstSimNum:lastSimNum,,,Yr] * karray(rep(((OMd@MScale + (1 / OMd@MScale)) / 2) + ((OMd@MScale - (1 / OMd@MScale)) / 2) * sin(2 * pi * (((Yr - .Object@nyears) / OMd@MLambda) + OMd@MPhi)),
-                                                                                                        each=.Object@nsimPerOMFile[iom] * .Object@npop),
-                                                                                                    dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages))
-        }
-      }
-      else
-      {
-        if ((length(OMd@MLambda) != 1) || (length(OMd@MPhi) != 1))
-        {
-          print("Error: model definition MLambda and MPhi must be scalar if MScale is scalar")
-          stop()
-        }
-
-        if (OMd@MScale > 1)
-        {
-          if (OMd@MLambda <= 0)
-          {
-            print("Error: model definition MLambda values should be > 0")
-            stop()
-          }
-
-          Yrs <- .Object@nyears:allyears
-
-          .Object@M[firstSimNum:lastSimNum,,,Yrs] <- .Object@M[firstSimNum:lastSimNum,,,Yrs] * karray(rep(((OMd@MScale + (1 / OMd@MScale)) / 2) + ((OMd@MScale - (1 / OMd@MScale)) / 2) * sin(2 * pi * (((Yrs - .Object@nyears) / OMd@MLambda) + OMd@MPhi)),
-                                                                                                          each=.Object@nages * .Object@nsimPerOMFile[iom] * .Object@npop),
-                                                                                                      dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, length(Yrs)))
-        }
-        else if (OMd@MScale < 1)
-        {
-          print("Error: model definition MScale value should be >= 1")
-          stop()
-        }
-      }
+      .Object@M[firstSimNum:lastSimNum,,,Yrs] <- .Object@M[firstSimNum:lastSimNum,,,Yrs] * MVariability
 
       # ---- Stock-recruit relationships -------
       .Object@SRrel <- as.integer(1) #BH: steepness ssMod$parameters$Label="SR_BH_steep"
@@ -768,7 +796,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
         stop()
       }
 
-      #Len_age relationships
+      # Len_age relationships
       #nColOffset <- 4
       #.Object@Len_age[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$growthseries[nColOffset + 1:nagesss]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
       #                                                     dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
@@ -776,6 +804,13 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
            dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
       .Object@Len_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Len_Mid, each=.Object@nsimPerOMFile[iom] * .Object@npop),
            dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+
+      # Add Length-age relationship variability
+      LenAgeVariability <- createVariability("LenAge", .Object@nsimPerOMFile[iom], .Object, OMd)
+      Yrs               <- .Object@nyears:allyears
+
+      .Object@Len_age[firstSimNum:lastSimNum,,,Yrs]     <- .Object@Len_age[firstSimNum:lastSimNum,,,Yrs] * LenAgeVariability
+      .Object@Len_age_mid[firstSimNum:lastSimNum,,,Yrs] <- .Object@Len_age_mid[firstSimNum:lastSimNum,,,Yrs] * LenAgeVariability
 
       #weight-length parameters
       # appears that SS does not apply them to the mean Len(a), but integrates to account for the non-linearity - use SS mass inputs instead
