@@ -43,9 +43,29 @@ setClass("OMd",representation(
                ReccvRin         = "numeric",
                NInitCV          = "numeric",   # additional noise on initial N(a) (CV on age 1)
                NInitCVdecay     = "numeric",   # exponential decay on CV on initial N(a) = exp(NinitCV*(a-1))
-               selExpRange      = "numeric",   # sel temporal variability exponentoscillates with a sin wave rangeing between these values
+               selExpRange      = "numeric",   # sel temporal variability exponent oscillates with a sin wave ranging between these values
                selAgeRange      = "numeric",   # 0=no age shift, 2 means (discretized) sine wave shift of sel vector between - 2 and + 2 age class
                selWLRange       = "karray",    # sel temporal variability wavelength range (0.0625 = quarter wavelength in 25 years, 0.5=2 full cycles in 25 years
+
+               MScale           = "numeric",   # sin wave scaling applied to M (multiplied by). Max value = MScale, min value = 1/MScale.
+               MLambda          = "numeric",   # wavelength of sin wave scaling applied to M in years.
+               MPhi             = "numeric",   # phase of sin wave scaling applied to M. 1 equals full period offset.
+                                               # Scaling given by:
+                                               #
+                                               #   (MScale + (1 / MScale)) / 2 + (MScale - (1 / MScale)) * sin(2 * pi * (((y-y0) / MLambda) + MPhi))
+                                               #
+                                               # MScale, MLambda and MPhi can be scalar, in which case they apply equally to all age classes, or
+                                               # a vector of length nages which defines individual behaviour for each age classs.
+
+               LenAgeScale      = "numeric",   # sin wave scaling applied to length-age relationship (multiplied by). Max value = LenAgeScale, min value = 1/LenAgeScale.
+               LenAgeLambda     = "numeric",   # wavelength of sin wave scaling applied to length-age in years.
+               LenAgePhi        = "numeric",   # phase of sin wave scaling applied to length-age. 1 equals full period offset.
+                                               # Scaling given by:
+                                               #
+                                               #   (LenAgeScale + (1 / LenAgeScale)) / 2 + (LenAgeScale - (1 / LenAgeScale)) * sin(2 * pi * (((y-y0) / LenAgeLambda) + LenAgePhi))
+                                               #
+                                               # LenAgeScale, LenAgeLambda and LenAgePhi can be scalar, in which case they apply equally to all age classes, or
+                                               # a vector of length nages which defines individual behaviour for each age classs.
 
                nsubyears        = "integer",
                firstCalendarYr  = "integer",
@@ -101,6 +121,12 @@ setClass("OMd",representation(
                tuneLogDomain    = "numeric"    # log base 10 of search domain for tuning solution. It is a log domain to improve search dynamic range
              ),
              prototype = list(
+               MScale        = 1,
+               MLambda       = 1,
+               MPhi          = 0,
+               LenAgeScale   = 1,
+               LenAgeLambda  = 1,
+               LenAgePhi     = 0,
                tuneTol       = 0.01,
                tuneLogDomain = c(-3,0.5),
                RecScale      = karray(c(1)),
@@ -110,7 +136,85 @@ setClass("OMd",representation(
 )
 
 
+#------------------------------------------------------------------------------
 
+createVariability <- function(Prefix, nsims, Obj, OMd)
+{
+  Yrs         <- 0:Obj@proyears
+  Variability <- karray(1, dim=c(nsims, Obj@npop, Obj@nages, length(Yrs)))
+
+  Scale  <- slot(OMd, paste(Prefix, "Scale",  sep=""))
+  Lambda <- slot(OMd, paste(Prefix, "Lambda", sep=""))
+  Phi    <- slot(OMd, paste(Prefix, "Phi",    sep=""))
+
+  if (length(Scale) > 1)
+  {
+    if (length(Scale) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Scale vector should be nages in length", sep=""))
+      stop()
+    }
+
+    if (any(Scale < 1))
+    {
+      print(paste("Error: model definition ", Prefix, "Scale values should be >= 1", sep=""))
+      stop()
+    }
+
+    if (length(Lambda) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda vector should be nages in length", sep=""))
+      stop()
+    }
+
+    if (any(Lambda <= 0))
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda values should be > 0", sep=""))
+      stop()
+    }
+
+    if (length(Phi) != Obj@nages)
+    {
+      print(paste("Error: model definition ", Prefix, "Phi vector should be nages in length", sep=""))
+      stop()
+    }
+
+    for(Yr in Yrs)
+    {
+      Variability[,,,Yr + 1] <- karray(rep(((Scale + (1 / Scale)) / 2) + ((Scale - (1 / Scale)) / 2) * sin(2 * pi * ((Yr / Lambda) + Phi)),
+                                           each=nsims * Obj@npop),
+                                       dim=c(nsims, Obj@npop, Obj@nages))
+    }
+  }
+  else
+  {
+    if ((length(Lambda) != 1) || (length(Phi) != 1))
+    {
+      print(paste("Error: model definition ", Prefix, "Lambda and ", Prefix, "Phi must be scalar if ", Prefix, "Scale is scalar", sep=""))
+      stop()
+    }
+
+    if (Scale > 1)
+    {
+      if (Lambda <= 0)
+      {
+        print(paste("Error: model definition ", Prefix, "Lambda values should be > 0", sep=""))
+        stop()
+      }
+
+      Variability <- karray(rep(((Scale + (1 / Scale)) / 2) + ((Scale - (1 / Scale)) / 2) * sin(2 * pi * ((Yrs / Lambda) + Phi)),
+                                each=Obj@nages * nsims * Obj@npop),
+                            dim=c(nsims, Obj@npop, Obj@nages, length(Yrs)))
+    }
+    else if (Scale < 1)
+    {
+      print(paste("Error: model definition ", Prefix, "Scale value should be >= 1", sep=""))
+      stop()
+    }
+  }
+
+  return (Variability)
+}
 
 
 #------------------- Operating model object -------------------------------------------------------------------------------------
@@ -588,6 +692,12 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       #SS reported M(last age)=NA for some reason
       .Object@M[firstSimNum:lastSimNum,, .Object@nages,] <- .Object@M[keep(firstSimNum:lastSimNum),, .Object@nages - 1, ]
 
+      # --- set up M variability -------
+      MVariability <- createVariability("M", .Object@nsimPerOMFile[iom], .Object, OMd)
+      Yrs          <- .Object@nyears:allyears
+
+      .Object@M[firstSimNum:lastSimNum,,,Yrs] <- .Object@M[firstSimNum:lastSimNum,,,Yrs] * MVariability
+
       # ---- Stock-recruit relationships -------
       .Object@SRrel <- as.integer(1) #BH: steepness ssMod$parameters$Label="SR_BH_steep"
       .Object@h[firstSimNum:lastSimNum,] <- karray(ssMod$parameters[ssMod$parameters$Label == "SR_BH_steep",]$Value,
@@ -686,7 +796,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
         stop()
       }
 
-      #Len_age relationships
+      # Len_age relationships
       #nColOffset <- 4
       #.Object@Len_age[firstSimNum:lastSimNum,,,] <- karray(rep(as.numeric(ssMod$growthseries[nColOffset + 1:nagesss]), each=.Object@nsimPerOMFile[iom] * .Object@npop),
       #                                                     dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
@@ -694,6 +804,13 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
            dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
       .Object@Len_age_mid[firstSimNum:lastSimNum,,,] <- karray(rep(ssMod$endgrowth$Len_Mid, each=.Object@nsimPerOMFile[iom] * .Object@npop),
            dim=c(.Object@nsimPerOMFile[iom], .Object@npop, .Object@nages, allyears))
+
+      # Add Length-age relationship variability
+      LenAgeVariability <- createVariability("LenAge", .Object@nsimPerOMFile[iom], .Object, OMd)
+      Yrs               <- .Object@nyears:allyears
+
+      .Object@Len_age[firstSimNum:lastSimNum,,,Yrs]     <- .Object@Len_age[firstSimNum:lastSimNum,,,Yrs] * LenAgeVariability
+      .Object@Len_age_mid[firstSimNum:lastSimNum,,,Yrs] <- .Object@Len_age_mid[firstSimNum:lastSimNum,,,Yrs] * LenAgeVariability
 
       #weight-length parameters
       # appears that SS does not apply them to the mean Len(a), but integrates to account for the non-linearity - use SS mass inputs instead
