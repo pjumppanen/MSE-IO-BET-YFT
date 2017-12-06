@@ -27,6 +27,7 @@ plotIndices.f <- function (modList = gridZList, MSYyLim=c(0,300), mFile = F, mfr
     cpueRMSEall <- array(NA, dim = c(numMod, numCPUE))
     gradall <- NULL
     LLHall <- NULL
+    tagFit <- NULL
     rTrendall <- NULL
     for (i in 1:length(modList)) {
         print(modList[i])
@@ -86,7 +87,11 @@ plotIndices.f <- function (modList = gridZList, MSYyLim=c(0,300), mFile = F, mfr
             cpueRMSEall[i, ] <- as.numeric(cpueRMSE)
             gradall <- c(gradall, m$maximum_gradient_component)
             LLHall <- c(LLHall, m$likelihoods_used$values[1])
-            rSlope <- coefficients(lm(exp(m$recruit$dev[m$recruit$era == 
+
+            tmp <- m$likelihoods_raw_by_fleet[m$likelihoods_raw_by_fleet[,1]=="Tag_comp_Like" | m$likelihoods_raw_by_fleet[,1]=="Tag_negbin_Like",]
+            tagFit <- c(tagFit, sum(as.numeric(tmp[1,3:length(tmp)])) + sum(as.numeric(tmp[2,3:length(tmp)])))
+
+            rSlope <- coefficients(lm(exp(m$recruit$dev[m$recruit$era ==
                 "Main"]) ~ c(1:length(m$recruit$dev[m$recruit$era == 
                 "Main"]))))[2]
             #rTrend <- length(m$recruit$dev[m$recruit$era == "Main"]) * 
@@ -106,6 +111,7 @@ plotIndices.f <- function (modList = gridZList, MSYyLim=c(0,300), mFile = F, mfr
             cpueRMSEall[i, ] <- NA
             gradall <- c(gradall, NA)
             LLHall <- c(LLHall, NA)
+            tagFit <- c(tagFit, NA)
             rTrendall <- c(rTrendall, NA)
         }
     }
@@ -129,6 +135,13 @@ plotIndices.f <- function (modList = gridZList, MSYyLim=c(0,300), mFile = F, mfr
     for (i in 1:ncol(fList)) {
         boxplot(LLHall ~ fList[, 1]:fList[, 2], ylab = "Likelihood units")
     }
+
+    par(mfrow = mfrowLayout)
+    boxplot(tagFit, ylab = "(Pre-weighting) Likelihood units")
+    for (i in 1:ncol(fList)) {
+        boxplot(tagFit ~ fList[, i], ylab = "(Pre-weighting) Likelihood units")
+    }
+
     par(mfrow = mfrowLayout)
     boxplot(gradall, ylab = "max. gradient")
     for (i in 1:ncol(fList)) {

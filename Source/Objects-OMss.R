@@ -446,7 +446,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       stop()
     }
 
-    OMd@nsimPerOMFile <- karray(as.vector(t(rmultinom(1, size=OMd@totalSims, prob=OMd@modelWeight))))
+    .Object@nsimPerOMFile <- karray(as.vector(t(rmultinom(1, size=OMd@totalSims, prob=OMd@modelWeight))))
   }
   else
   {
@@ -480,7 +480,12 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
       print(c("importing ", .Object@OMList[iom]))
 
-      ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
+      # this is intended to speed things up with pre-saved R objects, but importGrid needs to be expanded for this to work
+      #if(exists(unlist(.Object@OMList[iom]))){
+      #  ssMod <- get(unlist(.Object@OMList[iom]))
+      #} else {
+        ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
+      #}
 
       if (iom == 1)
       {

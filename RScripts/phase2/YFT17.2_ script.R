@@ -7,7 +7,9 @@
 # 3) data, MP recommendation, and out of date OM time lags
 # 4) add vector of observed catches between OM conditioning and first TAC application
 
-setwd("C:\\MSE-IO-BET-YFT\\")  # Set the working directory
+#setwd("C:\\MSE-IO-BET-YFT\\")  # Set the working directory
+setwd("H:\\C-offline\\MSE-IO-BET-YFT\\gitMirror")  # Set the working directory
+
 rm(list=ls(all=TRUE))                  # Remove all existing objects from environment
 
 #for Tinn-R users only: (may no longer be required)
@@ -26,74 +28,75 @@ source("Source/mseGraphics.R")
 
 
 #########################################################################################################
-#========================================================================================================
-# A truncated test case OM
-#========================================================================================================
-
-# A minimalist demonstration OM test
-# Define an OMd (Operating Model definition object)
-# OMyftNEr: R-based demo OM with minimal process or observation error, MSE run with fishery shut down,
-# Only 2 SS specifications, and one replicate for each
+# Create OMs
 
 
-#===== Create & save some Operating Models ====================================
 
-source('Rscripts\\Build OM Model-yftY17.1.R')      # OM-ref full 216 YFT OM suite, 2160 realizations
+#===== Create & save a test case for the reference case Operating Models OMrefY17.2 ====================================
+source('Rscripts\\phase2\\Build OM Model-OMrefY17.2test.R')  # 20 realization test with 3 SS3 configurations
+
 # Create an OM object for the OMd
-print(system.time(OMyftY17.1<-new("OMss",OMd, Report=F)))
-OMyftY17.1@UseCluster <- 0
+print(system.time(OMrefY17.2test<-new("OMss",OMd, Report=F)))
+OMrefY17.2test@UseCluster <- 0
 # Save the OM
-save(OMyftY17.1,file=paste(getwd(),"/Objects/OMyftY17.1.RDA",sep=""))
+save(OMrefY17.2test,file=paste(getwd(),"/Objects/phase2/OMrefY17.2test.RDA",sep=""))
 
 
 
-source('Rscripts\\Build OM Model-yftY17.1.1.R')     # OM-ref 216 YFT OM suite, 216 realizations
+#===== Create & save the reference case Operating Models OMrefY17.2 ====================================
+source('Rscripts\\phase2\\Build OM Model-OMrefY17.2.R')  # full 2000 realization Reference case YFT OM proposed Dec 2017.
+
 # Create an OM object for the OMd
-print(system.time(OMyftY17.1.1<-new("OMss",OMd, Report=F)))
-OMyftY17.1.1@UseCluster <- 0
+print(system.time(OMrefY17.2<-new("OMss",OMd, Report=F)))
+OMrefY17.2@UseCluster <- 0
 # Save the OM
-save(OMyftY17.1.1,file=paste(getwd(),"/Objects/OMyftY17.1.1.RDA",sep=""))
-load(file=paste(getwd(),"/Objects/OMyftY17.1.1.RDA",sep=""))
+save(OMrefY17.2,file=paste(getwd(),"/Objects/phase2/OMrefY17.2.RDA",sep=""))
 
 
 
-source('Rscripts\\Build OM Model-yftY17.1tagWt.R')     # OM-robTagWt YFT OM suite, 360 realizations
-# Create an OM object for the OMd
-print(system.time(OMyftY17.1tagWt<-new("OMss",OMd, Report=F)))
-OMyftY17.1tagWt@UseCluster <- 0
-# Save the OM
-save(OMyftY17.1tagWt,file=paste(getwd(),"/Objects/OMyftY17.1tagWt.RDA",sep=""))
 
 
 
-source('Rscripts\\Build OM Model-yftY17.1selTrend.R')     # OM-robSelTrend YFT OM suite, 360 realizations
-# Create an OM object for the OMd
-print(system.time(OMyftY17.1selTrend<-new("OMss",OMd, Report=F)))
-OMyftY17.1selTrend@UseCluster <- 0
-# Save the OM
-save(OMyftY17.1selTrend,file=paste(getwd(),"/Objects/OMyftY17.1selTrend.RDA",sep=""))
+
 
 
 
 #===== load and possibly modify existing Operating Models and conduct MP tuning ====================================
 
-# Load a previously created OM
-load(file=paste(getwd(),"/Objects/OMyftY17.1.1.RDA",sep=""))
+# Load the previously created test OM
+load(file=paste(getwd(),"/Objects/phase2/OMrefY17.2test.RDA",sep=""))
+
+# Run some MPs without tuning
+MPList2 <- c("PT41.15.216.t3","IT5.15.216.t3","CCt.216.t3")
+print(system.time(mseOMrefY17.2test.noTune  <- new("MSE",OMrefY17.2test,MPs <- MPList2,interval=3, Report=F,UseCluster=0)))
+
+
+
+
 
 MPList1 <- c("PT41F.tune.15","PT41.tune.15","IT5.tune.15","CCt")
 
-# tune 216 models to YFT tuning objective T1
-OMyftY17.1.1@UseCluster <- 0
-OMyftY17.1.1@tunePM     <- "SBoSBMSY0.5"
-OMyftY17.1.1@tunePMProjPeriod <-1001
-OMyftY17.1.1@tunePMTarget <- 1.
-OMyftY17.1.1@CppMethod <- 0
-print(system.time(mseOMyftY17.1.1  <- new("MSE",OMyftY17.1.1,MPs <- MPList1,interval=3, Report=F,UseCluster=0)))
-save(mseOMyftY17.1.1,file=paste(getwd(),"/Objects/mseOMyftY17.1.1.RDA",sep=""))
-load(file=paste(getwd(),"/Objects/mseOMyftY17.1.1.RDA",sep=""))
-plotTS.f(mseOMyftY17.1.1, plotByRF=F, doWorms=T)  #Time series (worm) plots
-plotTS.f(mseOMyftY17.1.1, plotByRF=F, doWorms=T, param="t10")  #Time series (worm) plots
-plotTS.f(mseOMyftY17.1.1, plotByRF=F, doWorms=T, param="t00")  #Time series (worm) plots
+# tune MPs to YFT tuning objective T1
+OMrefY17.2test@UseCluster <- 0
+OMrefY17.2test@tunePM     <- "SBoSBMSY0.5"
+OMrefY17.2test@tunePMProjPeriod <-1001
+OMrefY17.2test@tunePMTarget <- 1.
+OMrefY17.2test@CppMethod <- 0
+print(system.time(mseOMrefY17.2test.MPT1  <- new("MSE",OMrefY17.2test,MPs <- MPList1,interval=3, Report=F,UseCluster=0)))
+save(mseOMrefY17.2test.MPT1,file=paste(getwd(),"/Objects/phase2/mseOMrefY17.2test.MPT1.RDA",sep=""))
+load(file=paste(getwd(),"/Objects/phase2/mseOMrefY17.2test.MPT1.RDA",sep=""))
+plotTS.f(mseOMrefY17.2test.MPT1, plotByRF=F, doWorms=T)  #Time series (worm) plots
+plotTS.f(mseOMrefY17.2test.MPT1, plotByRF=F, doWorms=T, param="t10")  #Time series (worm) plots
+plotTS.f(mseOMrefY17.2test.MPT1, plotByRF=F, doWorms=T, param="t00")  #Time series (worm) plots
+
+
+
+
+
+xxxx below here old stuff...
+
+
+
 
 
 
