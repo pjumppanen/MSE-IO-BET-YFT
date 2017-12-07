@@ -8,6 +8,7 @@
 
 #setwd("C:\\Users\\kol018\\MSE-IO-BET-YFT\\Mseom\\Mseom\\MSE-IO-BET-YFT\\YFT-MSE")  # Set the working directory
 
+setwd("C:\\MSE-IO-BET-YFT\\")  # Set the working directory
 rm(list=ls(all=TRUE))                  # Remove all existing objects from environment
 
 #for Tinn-R users only: (may no longer be required)
@@ -38,6 +39,8 @@ source("Rscripts/Build OMyftNEr.R")
 
 # Create an OM object for the OMd
 print(system.time(OMyftNEr<-new("OMss",OMd, Report=F)))
+
+OMyftNEr@UseCluster <- 0
 
 # Save the OM
 save(OMyftNEr,file=paste(getwd(),"/Objects/OMyftNEr.RDA",sep=""))
