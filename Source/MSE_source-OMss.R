@@ -148,7 +148,8 @@ Cpp_MSYrefs <- function(SimNums, .Object, nyears=40)
                                     .Object@npop,
                                     .Object@nages,
                                     .Object@nareas,
-                                    .Object@nfleets)
+                                    .Object@nfleets,
+                                    .Object@FAgeRange)
   }
 
   # delete the object
@@ -160,6 +161,7 @@ Cpp_MSYrefs <- function(SimNums, .Object, nyears=40)
 
 R_MSYrefs <- function(SimNums, UseCluster, .Object, nyears=40)
 {
+
   nCores    <- detectCores()
   nOMfiles  <- length(SimNums)
 
@@ -244,7 +246,8 @@ getMSYrefs <- function(sim, .Object, nyears=40, AsCluster=FALSE, toly=1e-1)
                  SRrel=.Object@SRrel,
                  targpop=.Object@targpop,
                  MSYyear=.Object@nyears,
-                 tol=toly)
+                 tol=toly,
+                 FAgeRange=.Object@FAgeRange)
 
   best <- popdyn(test$minimum,
                  reportIndicators=TRUE,
@@ -275,7 +278,8 @@ getMSYrefs <- function(sim, .Object, nyears=40, AsCluster=FALSE, toly=1e-1)
                  Recdevs=.Object@Recdevs[sim,,],
                  SRrel=.Object@SRrel,
                  targpop=.Object@targpop,
-                 MSYyear=.Object@nyears)
+                 MSYyear=.Object@nyears,
+                 FAgeRange=.Object@FAgeRange)
 
   print("Effort multiplier at MSY:")
   print(exp(test$minimum))
@@ -306,7 +310,8 @@ MSYreferencePoints <- function(ECurrent,
                                npop,
                                nages,
                                nareas,
-                               nfleets)
+                               nfleets,
+                               FAgeRange)
 {
   # Assume M,C,SSN,Wt_age are single year slices. In addition assume N and NBefore
   # have nsubyear + 1 entries for the subyear index with the +1 th entry
@@ -356,7 +361,7 @@ MSYreferencePoints <- function(ECurrent,
   MbyPAM    <- karray(rep(M[,1:(nages-2)],times=nsubyears), dim=c(npop,nages-2,nsubyears))
   FsoRbyPAM <- ZsoRbyPAM - MbyPAM / nsubyears
 
-  FMSY1     <- mean(FsoRbyPAM[,2:27,])  # 2:27 = true ages 1:26 (1:26 used by SS)
+  FMSY1     <- mean(FsoRbyPAM[,FAgeRange[1]:FAgeRange[2],])  # 2:27 = true ages 1:26 (1:26 used by SS)
 
   #potential change to integrated biomass calculation
   SSBMSY    <- sum(karray(SSN[targpop,,1,],c(length(targpop),nages,nareas)) * karray(Wt_age[targpop,], c(length(targpop),nages,nareas)))
@@ -400,7 +405,8 @@ popdyn <- function(par,
                    SRrel,
                    targpop=NA,
                    MSYyear=1,
-                   loud=F)
+                   loud=F,
+                   FAgeRange)
 {
   #Effort multiplier for ECurrent
   totF <- exp(par)
@@ -589,7 +595,8 @@ popdyn <- function(par,
                                npop,
                                nages,
                                nareas,
-                               nfleets))
+                               nfleets,
+                               FAgeRange))
   }
   else
   {
