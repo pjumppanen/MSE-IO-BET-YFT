@@ -966,11 +966,13 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
           nColOffset <- 11
 
+          #PAYMR
           NBefore[,1:nagesss,yrSeas[1],yrSeas[2],Nss$Area[i]] <- as.numeric(Nss[i,nColOffset + 1:nagesss])
           SSN[,,yrSeas[1],yrSeas[2],Nss$Area[i]] <- NBefore[,,yrSeas[1],yrSeas[2],Nss$Area[i]] * .Object@mat[firstSimNum,,,yrSeas[1]]
         }
 
-        .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- rep(NBefore[,,.Object@nyears,1,], each=.Object@nsimPerOMFile[iom])
+        # This is the N by SPAYMR in the last year of the assessment, that is re-iterated in the first year of projections
+         .Object@NBeforeInit[firstSimNum:lastSimNum,,,] <- rep(NBefore[,,.Object@nyears,1,], each=.Object@nsimPerOMFile[iom])
 
         #add noise to NBeforeInit
         CVMatBySPA  <- rep(.Object@NInitCV * exp(-.Object@NInitCVdecay * (0:(.Object@nages - 1))), each=.Object@nsimPerOMFile[iom] * .Object@npop)
@@ -996,7 +998,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
           .Object@RecYrQtrss[firstSimNum:lastSimNum,,FirstIdx:LastIdx] <- rep(apply(NBefore[,1,yyy,keep(1:.Object@nsubyears),], c(1,2), sum), each=.Object@nsimPerOMFile[iom])
         }
 
-        #All this stuff used to calculate Frep (summed over regions, mean over age and season)
+        #All this stuff is used to calculate Frep (summed over regions, arithmetic mean over age and season)
         NsoRbyPAYM   <- karray(NA, dim=c(.Object@npop,.Object@nages,allyears+1,.Object@nsubyears))
         NsoRbyPAYM[] <- apply(NBefore, FUN=sum, MARGIN=c(1:4))
 
@@ -1014,8 +1016,6 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
         .Object@Frepss[firstSimNum:lastSimNum,] <- rep(apply(FsoRbyPAYM[,a1:a2,,], mean, MARGIN=c(3)), each=.Object@nsimPerOMFile[iom])
 
         # alternate Frep calculation from ss Kobe output ... they really ought to be the same!!
-
-
 
         rm(NsoRbyPAYM)
         rm(ZsoRbyPAYM)
@@ -1478,12 +1478,14 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   cat("\n")
 
   y           <- initYear
+
   mm          <- nsubyears
   nSpawnPerYr <- length(OM@Recsubyr)  # rec Index for more than 1 rec per year
 
   NullRecSpatialDevs <- karray(as.double(1.0),c(nsim,npop,nareas))
-  N_Y                <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
-  NBefore_Y          <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))
+  NBefore_Y          <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))  # this N should be the start of timestep
+  N_Y                <- karray(NA,c(nsim,npop,nages,nsubyears + 1,nareas))  # this N is updated within the timestep
+
   SSN_Y              <- karray(as.double(NA),c(nsim,npop,nages,nsubyears,nareas))
   NLL_Y              <- karray(as.double(NA),c(nsim,nsubyears,OM@nCPUE))
   NLLI_Y             <- karray(as.double(NA),c(nsim))
@@ -1499,11 +1501,11 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   RecdevInd_Y        <- (y - 1) * nSpawnPerYr + 1
   Recdevs_Y          <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
   #All this stuff used to calculate Frep (summed over regions, mean over age and season)
-  NsoRbySPAMInit     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
+  NsoRbySPAM     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
 
   # Initialise starting population
-  N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
   NBefore_Y[,,,1,] <- OM@NBeforeInit[keep(projSims),,,]
+  #N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
 
   # Matrix index arrays used in historic and projection R code
   SPAYMRF <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas, 1:nfleets))
@@ -1568,6 +1570,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
     FM <- karray(NA, dim=c(nsim,npop,nages,nareas,nfleets))
     Z  <- karray(NA, dim=c(nsim,npop,nages,nareas))
 
+    #Initial projection year application
     for (mm in 1:nsubyears)
     {
       SPAMRF[,4] <- mm
@@ -1626,9 +1629,10 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
       NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
       NBefore_Y[,,1,mm + 1,]              <- 0
-      N_Y[,,,mm + 1,]                     <- NBefore_Y[,,,mm + 1,]
-    }
-  }
+
+    } #Initial projection year mm loop
+  }  #R option initial year set up
+
 
   # calculate LL selected numbers for the year for the abundance index
   NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
@@ -1643,15 +1647,13 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
   NLLI_Y <- apply(NLL_Y, FUN=sum, MARGIN=1, na.rm=T)
 
-  # copy results back into historic data
+  # copy results back into historical data
   SSBA[,,y] <- SSBA_Y
   NLLI[,y]  <- NLLI_Y
   NLL[,y,,] <- NLL_Y
 
   E <- apply(ECurrent, sum, MARGIN=c(1,2,4))
 
-  #first N needs to be re-initialized for each MP
-  NInit_Y <- N_Y[,,,nsubyears + 1,]
 
   # Store results ...
   .Object@CM[1:nMPs,projSims,,y]     <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum),each=nMPs)
@@ -1659,17 +1661,18 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
   CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
   #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
+
   BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
+
   B[,,y]      <- apply(BbyS, c(1,2), mean)
   Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
 
   FirstIdx <- (y - 1) * nsubyears + 1
   LastIdx  <- y * nsubyears
-
   RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
 
   # Save data for Frep calculation
-  NsoRbySPAMInit[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
+  NsoRbySPAM[,,,1:(nsubyears+1)] <- apply(NBefore_Y[,,,1:(nsubyears+1),], FUN=sum, MARGIN=c(1:4))
 
   # Run projections
   # ---------------------------------------------------------------------------
@@ -1679,7 +1682,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   firstMPy <- nyears + .Object@firstMPYr - .Object@lastCalendarYr
   upyrs    <- firstMPy + (0:(floor(OM@proyears / interval))) * interval  # the years in which there are MP updates (e.g. every three years)
 
-  #xxx zzz need to load historical Catch and CL (depending on MP), bypassed for now
+  #xxx might need to load historical Catch and CL (depending on MP), bypassed for now
 
   CAAInit     <- karray(NA, dim=c(nsim, nages, nyears))
   CAAIndInit  <- karray(NA, dim=c(nsim, nages, nyears)) #Catch-at-age for the abudnance index fleets
@@ -1721,16 +1724,15 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
     }
     else
     {
-      N_Y[,,,1,]        <- NInit_Y
-      NBefore_Y[,,,1,]  <- NInit_Y
+      # NBefore is already graduated at this point, so should be appropriate for the projections
+      #N_Y[,,,1,]        <- NInit_Y
+      #NBefore_Y[,,,1,]  <- NInit_Y
     }
-
-    NsoRbySPAM <- NsoRbySPAMInit
 
     .Object@CM[MP,keep(projSims),,]     <- OM@CBss[keep(projSims),,]
 
 
-    # There is an inconsistncy here with SS that remains unresolved, but is seeminly internally consistent
+    # There is an inconsistency here with SS that remains unresolved, but is seeminly internally consistent
     # The Z calculations are consistent with SS, so F[t,a] = Z[t,a] - M[a] should be correct, but the reported F differs for some reason
     .Object@F_FMSY[MP,keep(projSims),] <- OM@Frepss[keep(projSims),] / OM@FMSY1[keep(projSims)]  #original
 
@@ -1755,7 +1757,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       Om.nt.beginProjection(Obj, as.double(rep(log(0.001), nfleets)))
     }
 
-    for (y in (nyears+1):(nyears + proyears))
+    for (y in (nyears+1):(nyears + proyears))     #redo initl year for reporting; test implications
     {
       SPAYMRF[,4] <- y
       SPAY[,4]    <- y
@@ -1863,9 +1865,8 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
         # Simulate imperfect information --------------------------------------
 
-        if (y >=firstMPy) #DK change ... xxx why +1 ?
+        if (y >=firstMPy)
         {
-          # DK change in relation to redefined upyrs
           #update data
           if (y == firstMPy)
           {
@@ -1989,7 +1990,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
                          SSBA_Y,
                          as.integer(100));
       }
-      else
+      else  # R roption
       {
         # distribute TAC by season and fleet for all sims, for all fishries that do not have TAEs
         isTACFleet          <- karray(NA, dim=dim(CMCurrent))
@@ -2000,6 +2001,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
         for (mm in 1:nsubyears)
         {
+
           SPAYMRF[,5]  <- mm
           SPAMRF[,4]   <- mm
           SPAMR[,4]    <- mm
@@ -2156,7 +2158,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
           # end harvest calculations
           #---------------------------------------------------------------------
-
           #  age individuals
           NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
           NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
@@ -2189,7 +2190,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       CAAF[,,y,]  <- apply(C_Y, c(1,3,6), sum)
 
 
-      #B[,,y]      <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2), sum)
       BbyS        <- apply(NBefore_Y[,,,keep(1:nsubyears),] * karray(Wt_age[,,,y], c(nsim,npop,nages,nsubyears,nareas)), c(1,2,4), sum)
       B[,,y]      <- apply(BbyS, c(1,2), mean)
       Rec[,,y]    <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2), sum)
@@ -2200,14 +2200,10 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
 
       # Calculate Frep
-      NsoRbySPAM[,,,nsubyears + 1]      <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
+      NsoRbySPAM[,,,keep(1:(nsubyears+1))]         <- apply(NBefore_Y[,,,keep(1:(nsubyears+1)),], FUN=sum, MARGIN=c(1:4))
 
-      Frep                              <- findFrep(NsoRbySPAM, M[,,,y - 1], nsim, npop, nages, nsubyears, FAgeRange)
-      .Object@F_FMSY[MP,projSims,y - 1] <- Frep / OM@FMSY1[keep(projSims)]
-
-
-      # Save data for next Frep calculation
-      NsoRbySPAM[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
+      Frep                              <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange)
+      .Object@F_FMSY[MP,projSims,y] <- Frep / OM@FMSY1[keep(projSims)]
 
       # set up next year starting point
       N_Y[,,,1,]       <- N_Y[,,,nsubyears + 1,]
@@ -2219,8 +2215,8 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
     } # projection year loop
 
     # Calculate Frep
-    NsoRbySPAM[,,,nsubyears + 1]  <- apply(NBefore_Y[,,,1,], FUN=sum, MARGIN=c(1:3))
     Frep                          <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange)
+
     .Object@F_FMSY[MP,projSims,y] <- Frep / OM@FMSY1[keep(projSims)]
 
     # Store results ...
