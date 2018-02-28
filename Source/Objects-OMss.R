@@ -550,7 +550,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
       stop()
     }
 
-    OMd@nsimPerOMFile <- karray(as.vector(t(rmultinom(1, size=OMd@totalSims, prob=OMd@modelWeight))))
+    .Object@nsimPerOMFile <- karray(as.vector(t(rmultinom(1, size=OMd@totalSims, prob=OMd@modelWeight))))
   }
   else
   {
@@ -584,7 +584,12 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
 
       print(c("importing ", .Object@OMList[iom]))
 
-      ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
+      # this is intended to speed things up with pre-saved R objects, but importGrid needs to be expanded for this to work
+      #if(exists(unlist(.Object@OMList[iom]))){
+      #  ssMod <- get(unlist(.Object@OMList[iom]))
+      #} else {
+        ssMod <- SS_output(dir=OMd@SSRootDir %&% .Object@OMList[iom], covar=F, ncols=213,forecast=F) # ssoutput.f no longer req'd, r4ss fixed
+      #}
 
       if (iom == 1)
       {
@@ -1560,6 +1565,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   Recdevs_Y          <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
   #All this stuff used to calculate Frep (summed over regions, mean over age and season)
   NsoRbySPAMInit     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
+  NsoRbySPAM         <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
 
   # Initialise starting population
   N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
@@ -1686,7 +1692,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       NBefore_Y[,,nages,mm + 1,]          <- N_Y[,,nages - 1,mm,] + N_Y[,,nages,mm,]
       NBefore_Y[,,2:(nages - 1),mm + 1,]  <- N_Y[,,1:(nages - 2),mm,]
       NBefore_Y[,,1,mm + 1,]              <- 0
-      N_Y[,,,mm + 1,]                     <- NBefore_Y[,,,mm + 1,]
     }
   }
 
@@ -1711,7 +1716,7 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   E <- apply(ECurrent, sum, MARGIN=c(1,2,4))
 
   #first N needs to be re-initialized for each MP
-  NInit_Y <- N_Y[,,,nsubyears + 1,]
+  NInit_Y <- NBefore_Y[,,,nsubyears + 1,]
 
   # Store results ...
   .Object@CM[1:nMPs,projSims,,y]     <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum),each=nMPs)
@@ -1727,9 +1732,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   LastIdx  <- y * nsubyears
 
   RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
-
-  # Save data for Frep calculation
-  NsoRbySPAMInit[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
 
   # Run projections
   # ---------------------------------------------------------------------------
@@ -1770,19 +1772,30 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   #CALLL10[,,1:nyears]     <- makeCAL(CAALL10[,,1:nyears,drop=F], Len_age[1,1,,1:nyears], CAL_bins)
   CALIndInit[,,1:nyears]  <- makeCAL(CAAIndInit[,,1:nyears], Len_age_mid[1,1,,1:nyears], CAL_bins)
 
+  bFirstRun <- TRUE
+
   for (MP in 1:nMPs)
   {
     #MP loop
     #Need to re-initialize some arrays
+    NBefore_Y[,,,1,]  <- NInit_Y
+
     if (.Object@CppMethod != 0)
     {
-      N_Y[,,,nsubyears + 1,]        <- NInit_Y
+      # cpp model overwrites sub-year 1 with sub-year 5 on beginning of code so
+      # initialisation of index 5 necessary
       NBefore_Y[,,,nsubyears + 1,]  <- NInit_Y
     }
-    else
+
+    if (bFirstRun)
     {
-      N_Y[,,,1,]        <- NInit_Y
-      NBefore_Y[,,,1,]  <- NInit_Y
+      # Initialise data for first Frep calculation. We need to save this
+      # seperately because four quarters of valid population data is required
+      # for the calculation but we only save one quarter for initialising the
+      # model state for each MP run.
+      NsoRbySPAMInit[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
+
+      bFirstRun <- FALSE
     }
 
     NsoRbySPAM <- NsoRbySPAMInit
@@ -2264,7 +2277,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       NsoRbySPAM[,,,1:nsubyears] <- apply(NBefore_Y[,,,keep(1:nsubyears),], FUN=sum, MARGIN=c(1:4))
 
       # set up next year starting point
-      N_Y[,,,1,]       <- N_Y[,,,nsubyears + 1,]
       NBefore_Y[,,,1,] <- NBefore_Y[,,,nsubyears + 1,]
 
       #---------------------------------------------------------------------
