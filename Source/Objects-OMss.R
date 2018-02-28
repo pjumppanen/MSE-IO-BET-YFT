@@ -2658,13 +2658,36 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
       bisect <- T
       if(bisect){  #custom bisection solver for percentile tuning
 
-        loPar  <- OM@tuneLogDomain[1]
-        hiPar  <- OM@tuneLogDomain[2]
-        loVal  <- opt_fn(loPar, bisect=T)
-        hiVal  <- opt_fn(hiPar, bisect=T)
+        Par1  <- OM@tuneLogDomain[1]
+        Par2  <- OM@tuneLogDomain[2]
+        Val1  <- opt_fn(Par1, bisect=T)
+        Val2  <- opt_fn(Par2, bisect=T)
 
+        # Check which way tuning response operates
+        if(Val1 < Val2){
+          loPar <- Par1
+          hiPar <- Par2
+          loVal <- Val1
+          hiVal <- Val2
+        } else {
+          loPar <- Par2
+          hiPar <- Par1
+          loVal <- Val2
+          hiVal <- Val1
+        }
+
+        #simple bisection
         #tmpPar <- log10((10^loPar + 10^hiPar)/2)
         tmpPar <- (loPar + hiPar)/2
+
+        #linear interpolation - should be more effective... predict par value as fn of obj function
+        #linMod <- lm(pars ~ vals, data=as.data.frame(cbind(vals=c(loVal,hiVal), pars=c(10^loPar,10^hiPar))))
+        #b <- linMod$coef[1]
+        #m <- linMod$coef[2]
+        #tmpPar <- log10(m*OM@tunePMTarget + b)
+
+
+
         tmpVal <- opt_fn(tmpPar, bisect=T)
 
         #check if desired target is bracketed
@@ -2676,20 +2699,45 @@ setMethod("initialize", "MSE", function(.Object, OM, MPs, interval=3, Report=F, 
         } else {
 
           print(" /n bisection minimization for quantiles")
-          print(c("lo, hi, tmp: ",loPar,hiPar, tmpPar))
+          print(c("loPar ",loPar, "      loVal ", loVal))
+          print(c("hiPar ",hiPar, "      hiVal ", hiVal))
+          print(c("tmpPar ",tmpPar, "    tmpVal ", tmpVal))
 
-          fnEval <- 4
+          nFnEval <- 4
           while (abs((tmpVal-OM@tunePMTarget)/OM@tunePMTarget) > OM@tuneTol & abs(10^hiPar-10^loPar)/(10^loPar) > 0.005){
-            if (tmpVal > OM@tunePMTarget & tmpPar > loPar) loPar <- tmpPar
-            if (tmpVal < OM@tunePMTarget & tmpPar < hiPar) hiPar <- tmpPar
+            if (tmpVal > OM@tunePMTarget){
+              hiPar <- tmpPar
+              hiVal <- tmpVal
+            }
+            if (tmpVal < OM@tunePMTarget){
+              loPar <- tmpPar
+              loVal <- tmpVal
+            }
 
+            #simple bisection
             #tmpPar <- log10((10^loPar + 10^hiPar)/2)
-            tmpPar <- (loPar + hiPar)/2
+            #tmpPar <- (loPar + hiPar)/2
+
+            #linear interpolation - should be more effective... predict par value as fn of obj function
+            #not much difference over bisection in a handful of trials - sometimes worse
+            #linMod <- lm(pars ~ vals, data=as.data.frame(cbind(vals=c(loVal,hiVal), pars=c(10^loPar,10^hiPar))))
+            linMod <- lm(pars ~ vals, data=as.data.frame(cbind(vals=c(loVal,hiVal), pars=c(loPar,hiPar))))
+            b <- linMod$coef[1]
+            m <- linMod$coef[2]
+            #tmpPar <- log10(m*OM@tunePMTarget + b)
+            tmpPar <- m*OM@tunePMTarget + b
+
+
+
+            print(c("next tmpPar ",tmpPar))
             tmpVal <- opt_fn(tmpPar, bisect=T)
 
             print("                                        bisection minimization for quantiles")
-            print(c("fnEval ",fnEval," lo, hi, tmp: ",loPar,hiPar, tmpPar))
-            fnEval <- fnEval + 1
+            print(c("nFnEval ",nFnEval))
+            print(c("loPar ",loPar, "      loVal ", loVal))
+            print(c("hiPar ",hiPar, "      hiVal ", hiVal))
+            print(c("tmpPar ",tmpPar, "    tmpVal ", tmpVal))
+            nFnEval <- nFnEval + 1
           }
           .Object@tune[idx] <- 10 ^ tmpPar
         }
