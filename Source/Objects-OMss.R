@@ -1617,12 +1617,11 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   Wt_age_mid_Y       <- Wt_age_mid[,,,y]
   RecdevInd_Y        <- (y - 1) * nSpawnPerYr + 1
   Recdevs_Y          <- Recdevs[,,keep(RecdevInd_Y:(RecdevInd_Y + nSpawnPerYr - 1))]
-  #All this stuff used to calculate Frep (summed over regions, mean over age and season)
-  NsoRbySPAM     <- karray(NA, dim=c(nsim,npop,nages,nsubyears + 1))
 
-  # Initialise starting population
+  # Initialise starting population. Note N_Y initialisation redundant for R case but
+  # needed for C++ case
   NBefore_Y[,,,1,] <- OM@NBeforeInit[keep(projSims),,,]
-  #N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
+  N_Y[,,,1,]       <- OM@NBeforeInit[keep(projSims),,,]
 
   # Matrix index arrays used in historic and projection R code
   SPAYMRF <- as.matrix(expand.grid(1:nsim, 1:npop, 1:nages, initYear, 1, 1:nareas, 1:nfleets))
@@ -1771,6 +1770,9 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
   E <- apply(ECurrent, sum, MARGIN=c(1,2,4))
 
+  # first N needs to be re-initialized for each MP, For Cpp model N_Y needs initialisation too.
+  NInit_Y    <- NBefore_Y[,,,nsubyears + 1,]
+  NCppInit_Y <- N_Y[,,,nsubyears + 1,]
 
   # Store results ...
   .Object@CM[1:nMPs,projSims,,y]     <- rep(apply(C_Y * karray(Wt_age_mid[,,,y], c(nsim,npop,nages,nsubyears,nareas,nfleets)), c(1,2), sum),each=nMPs)
@@ -1787,9 +1789,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
   FirstIdx <- (y - 1) * nsubyears + 1
   LastIdx  <- y * nsubyears
   RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
-
-  # Save data for Frep calculation
-  NsoRbySPAM[,,,1:(nsubyears+1)] <- apply(NBefore_Y[,,,1:(nsubyears+1),], FUN=sum, MARGIN=c(1:4))
 
   # Run projections
   # ---------------------------------------------------------------------------
@@ -1832,22 +1831,18 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
   for (MP in 1:nMPs)
   {
-    #MP loop
-    #Need to re-initialize some arrays
+    # MP loop. Need to re-initialize population state for each MP run
     if (.Object@CppMethod != 0)
     {
-      N_Y[,,,nsubyears + 1,]        <- NInit_Y
-      NBefore_Y[,,,nsubyears + 1,]  <- NInit_Y
+      NBefore_Y[,,,nsubyears + 1,] <- NInit_Y
+      N_Y[,,,nsubyears + 1,]       <- NCppInit_Y
     }
     else
     {
-      # NBefore is already graduated at this point, so should be appropriate for the projections
-      #N_Y[,,,1,]        <- NInit_Y
-      #NBefore_Y[,,,1,]  <- NInit_Y
+      NBefore_Y[,,,1,] <- NInit_Y
     }
 
-    .Object@CM[MP,keep(projSims),,]     <- OM@CBss[keep(projSims),,]
-
+    .Object@CM[MP,keep(projSims),,] <- OM@CBss[keep(projSims),,]
 
     # There is an inconsistency here with SS that remains unresolved, but is seeminly internally consistent
     # The Z calculations are consistent with SS, so F[t,a] = Z[t,a] - M[a] should be correct, but the reported F differs for some reason
@@ -1860,9 +1855,12 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
 
     set.seed(OM@seed) #repeat the same stochastic history for each MP to keep the comparison fair
 
-    cat(paste(MP,"/",nMPs," Running MSE for ",MPs[MP],"    lastSim ", projSims[length(projSims)], sep=""))  # print a progress report
+    # print a progress report
+    cat(paste(MP,"/",nMPs," Running MSE for ",MPs[MP],"    lastSim ", projSims[length(projSims)], sep=""))
     cat("\n")
-    flush.console()                                             # update the console
+
+    # update the console
+    flush.console()
 
     # initial TAC and TAE values required for first MP application
     TAC   <- karray(apply(CMCurrent, sum, MARGIN=c(1)))      # refresh the MP store of TAC among simulations
@@ -2317,24 +2315,17 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
       RecYrQtr[,,FirstIdx:LastIdx] <- apply(NBefore_Y[,,1,keep(1:nsubyears),], c(1,2,3), sum)
 
       # Calculate Frep
-      NsoRbySPAM[,,,keep(1:(nsubyears+1))]         <- apply(NBefore_Y[,,,keep(1:(nsubyears+1)),], FUN=sum, MARGIN=c(1:4))
-
-      Frep                              <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange)
+      NsoRbySPAM                    <- apply(NBefore_Y[,,,keep(1:(nsubyears+1)),], FUN=sum, MARGIN=c(1:4))
+      Frep                          <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange)
       .Object@F_FMSY[MP,projSims,y] <- Frep / OM@FMSY1[keep(projSims)]
 
       # set up next year starting point
-      N_Y[,,,1,]       <- N_Y[,,,nsubyears + 1,]
       NBefore_Y[,,,1,] <- NBefore_Y[,,,nsubyears + 1,]
 
       #---------------------------------------------------------------------
       # End of annual projection
 
     } # projection year loop
-
-    # Calculate Frep
-    Frep                          <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange)
-
-    .Object@F_FMSY[MP,projSims,y] <- Frep / OM@FMSY1[keep(projSims)]
 
     # Store results ...
     # archive timing may not be entirely consistent with SS for all quantitities,
