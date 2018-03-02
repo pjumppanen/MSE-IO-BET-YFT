@@ -1125,7 +1125,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
               # one row for each area, but fleet only operates in one area so can sum over areas
               YrRows <- lastSSyrSeas - iseason
               EThisSeason <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)]
-
+              EByQtrLastYr[1:OMd@nsubyears,r,ifleets] <- rep(EThisSeason, each=OMd@nsubyears)
               ECurrent[1:OMd@nsubyears,r,ifleets] <- ECurrent[1:OMd@nsubyears,r,ifleets] + (1.0 /numRecentSeas) * EThisSeason
 
               yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
@@ -1628,6 +1628,17 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
     } #Initial projection year mm loop
   }  #R option initial year set up
 
+  # Calculate final year Frep
+  NsoRbySPAM  <- apply(NBefore_Y[,,,keep(1:(nsubyears+1)),], FUN=sum, MARGIN=c(1:4))
+  FrepNorm    <- findFrep(NsoRbySPAM, M[,,,y], nsim, npop, nages, nsubyears, FAgeRange) / OM@FMSY1[keep(projSims)]
+
+  for (MP in 1:nMPs)
+  {
+    # There is an inconsistency here with SS that remains unresolved, but is seeminly internally consistent
+    # The Z calculations are consistent with SS, so F[t,a] = Z[t,a] - M[a] should be correct, but the reported F differs for some reason
+    .Object@F_FMSY[MP,keep(projSims),]  <- OM@Frepss[keep(projSims),] / OM@FMSY1[keep(projSims)]  #original
+    .Object@F_FMSY[MP,keep(projSims),y] <- FrepNorm
+  }
 
   # calculate LL selected numbers for the year for the abundance index
   NLLbySAMR <- apply(N_Y[,,keep(1:nages),1:nsubyears,], MARGIN=c(1,3,4,5), FUN=sum, na.rm=T)
@@ -1722,10 +1733,6 @@ runProjection <- function(.Object, OM, projSims, CPUEobsR, TACEErrorAll, MPs, in
     }
 
     .Object@CM[MP,keep(projSims),,] <- OM@CBss[keep(projSims),,]
-
-    # There is an inconsistency here with SS that remains unresolved, but is seeminly internally consistent
-    # The Z calculations are consistent with SS, so F[t,a] = Z[t,a] - M[a] should be correct, but the reported F differs for some reason
-    .Object@F_FMSY[MP,keep(projSims),] <- OM@Frepss[keep(projSims),] / OM@FMSY1[keep(projSims)]  #original
 
     CAA     <- CAAInit
     CAAInd  <- CAAIndInit
