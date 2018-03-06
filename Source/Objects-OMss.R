@@ -1078,7 +1078,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
         numRecentSeas   <- .Object@recentPerLast - .Object@recentPerFirst + 1 # last timestep indicated by recentPerFirst=0
 
         # calculate mean catch and effort by season and fleet
-        if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears ==0))
+        if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears == 0))
         {
           recentPeriodYrs    <- numRecentSeas/.Object@nsubyears
 
@@ -1090,9 +1090,8 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
               {
                 r <- ssMod$"fleet_area"[ifleets]
 
-                # one row for each area, but fleet only operates in one area so can sum over areas
                 YrRows                      <- lastSSyrSeas - .Object@recentPerFirst - (recentPeriodYrs * OMd@nsubyears) + ((iy - 1) * OMd@nsubyears) + im
-                EByQtrLastYr[im,r,ifleets]  <- sum(ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)])
+                EByQtrLastYr[im,r,ifleets]  <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows & ssMod$timeseries$Area == r, "F:_" %&% ifleets == names(ssMod$timeseries)]
                 ECurrent[im,r,ifleets]      <- ECurrent[im,r,ifleets] + (1.0 / recentPeriodYrs) * EByQtrLastYr[im,r,ifleets]
 
                 yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
@@ -1112,7 +1111,7 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
         }
         else #calculate mean catch and effort that remains constant over seasons
         {
-          if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears !=0))
+          if ((.Object@seasonCEDist) & (numRecentSeas %% OMd@nsubyears != 0))
           {
             readline("Warning: recent C&E dists are not seasonal because recentPeriod is not a multiple of nsubyears. Press ENTER to continue")
           }
@@ -1122,11 +1121,11 @@ setMethod("initialize", "OMss", function(.Object,OMd, Report=F, UseMSYss=0)
             for (iseason in .Object@recentPerLast:.Object@recentPerFirst)
             {
               r <- ssMod$"fleet_area"[ifleets]
-              # one row for each area, but fleet only operates in one area so can sum over areas
-              YrRows <- lastSSyrSeas - iseason
-              EThisSeason <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows, "F:_" %&% ifleets == names(ssMod$timeseries)]
-              EByQtrLastYr[1:OMd@nsubyears,r,ifleets] <- rep(EThisSeason, each=OMd@nsubyears)
-              ECurrent[1:OMd@nsubyears,r,ifleets] <- ECurrent[1:OMd@nsubyears,r,ifleets] + (1.0 /numRecentSeas) * EThisSeason
+
+              YrRows                                  <- lastSSyrSeas - iseason
+              EThisSeason                             <- ssMod$timeseries[ssMod$timeseries$Yr == YrRows & ssMod$timeseries$Area == r, "F:_" %&% ifleets == names(ssMod$timeseries)]
+              EByQtrLastYr[1:OMd@nsubyears,r,ifleets] <- EThisSeason
+              ECurrent[1:OMd@nsubyears,r,ifleets]     <- ECurrent[1:OMd@nsubyears,r,ifleets] + (1.0 /numRecentSeas) * EThisSeason
 
               yrSeas <- seasAsYrToMSEYrSeas.f(seasAsYr      = YrRows,
                                               endSeasAsYr   = ssMod$endyr,
