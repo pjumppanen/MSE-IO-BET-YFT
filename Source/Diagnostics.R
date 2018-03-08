@@ -26,6 +26,133 @@ getperf <- function(object)
 }
 
 
+createMsevizPerformanceData <- function(object, MPsSub=NA, nsimSub=NA)
+{
+  perfAddRows <- function(df, yr, MPs, data, indicator, name)
+  {
+    for (mp in MPs)
+    {
+      nsims <- dim(data)[2]
+      C1 <- rep(indicator, times=nsims)
+      C2 <- rep(yr, times=nsims)
+      C3 <- data[mp,]
+      C4 <- rep(name, times=nsims)
+      C5 <- rep(paste("MP", mp, sep=""), times=nsims)
+      df <- rbind(data.frame(df), data.frame(indicator=C1,year=C2,data=C3, name=C4, mp=C5))
+    }
+
+    return (df)
+  }
+
+  result.list <- list()
+
+  MSEobj    <- object
+  npop      <- MSEobj@npop
+  proyears  <- MSEobj@proyears
+  allyears  <- MSEobj@proyears + MSEobj@nyears
+  MPs       <- if (any(is.na(MPsSub))) 1:MSEobj@nMPs else MPsSub
+  Sims      <- if (any(is.na(nsimSub))) 1:MSEobj@nsim else nsimSub
+  nsim      <- length(Sims)
+  nMPs      <- length(MPs)
+  ntargpop  <- length(MSEobj@targpop)
+
+  firstMPy  <- MSEobj@nyears + MSEobj@firstMPYr - MSEobj@lastCalendarYr
+
+  # projection period to report on (starting from the first MPyear and ignoring the bridging years)
+  projPeriodList <- c(1,3,5,10,20,allyears-firstMPy,1001,1002) #1001-2 are YFT tuning years (temporary 'cause tunin spects numeric)
+
+  for (pp in projPeriodList)
+  {
+    df <- NULL
+
+    if(pp<1000)
+    {
+      ppnum       <- as.numeric(pp)
+      projPeriod  <-(firstMPy):(firstMPy + ppnum - 1)
+    }
+
+    if(pp>1000)
+    {
+      if (pp == 1001) projPeriod  <- MSEobj@nyears - MSEobj@lastCalendarYr + 2019:2039
+      if (pp == 1002) projPeriod  <- MSEobj@nyears - MSEobj@lastCalendarYr + 2024
+
+      ppnum <- length(projPeriod)
+    }
+
+    projPeriodm1 <- projPeriod - 1
+
+    #Performance statistics dim(nMPs, nsim)
+    # F1 Pr(SB>0.2SB0)
+    PrSBgtp2SB0   <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod]>0.2, MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, PrSBgtp2SB0, "F1", "Pr(SB>0.2SB0)")
+
+    # F2 Pr(SB>SBlim) where SBlim = 0.4SSBMSY
+    PrSBgtSBlim   <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod]>MSEobj@SBlim, MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, PrSBgtSBlim, "F2", "Pr(SB>SBlim)")
+
+    # S1 mean(SB/SB_0)
+    SBoSB0        <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, SBoSB0, "S1", "mean(SB/SB_0)")
+
+    # S2 min(SB/SB0)
+    minSBoSB0     <- round(apply(as.karray(MSEobj@SSB_SSB0)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), min), digits=3)
+    df            <- perfAddRows(df, firstMPy, MPs, minSBoSB0, "S2", "min(SB/SB_0)")
+
+    # S3 mean(SB/SB_MSY)
+    SBoSBMSY      <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, SBoSBMSY, "S3", "mean(SB/SB_MSY)")
+
+    # S4 mean(F/F_target), in this case...Ftarget = FMSY
+    FoFtarg       <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, FoFtarg, "S4", "mean(F/F_target)")
+
+    # S5 mean(F/F_MSY)
+    FoFMSY        <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod], MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, FoFMSY, "S5", "mean(F/F_MSY)")
+
+    # S6 Pr(Green)
+    PrGreen       <- round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] < 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] > 1, 1:2, sum) / (ppnum), 3)
+    df            <- perfAddRows(df, firstMPy, MPs, PrGreen, "S6", "Pr(Green)")
+
+    # S7 Pr(Red)
+    PrRed         <-round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),projPeriod] > 1 & as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] < 1, 1:2, sum) / (ppnum), 3)
+    df            <- perfAddRows(df, firstMPy, MPs, PrRed, "S7", "Pr(Red)")
+
+    # S8 Pr(SB>SB_MSY)
+    SBgtSBMSY     <- round(apply(as.karray(MSEobj@SSB_SSBMSY)[keep(MPs),keep(Sims),projPeriod] > 1.0, MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, SBgtSBMSY, "S8", "Pr(SB>SB_MSY)")
+
+    # T1 mean(C(t)/C(t-1))
+    CtonCtm1      <- apply((as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod] / as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriodm1]) , 1:2, mean)
+    df            <- perfAddRows(df, firstMPy, MPs, CtonCtm1, "T1", "mean(C(t)/C(t-1))")
+
+    # T2 var(C)
+    varC          <-round(apply(as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod], MARGIN=c(1:2), var), 2)
+    df            <- perfAddRows(df, firstMPy, MPs, varC, "T2", "var(C)")
+
+    # T3 var(F)
+#    varF          <-round(apply(as.karray(MSEobj@F_FMSY)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod] * FMSY1, MARGIN=c(1:2), var), 2)
+#    df            <- perfAddRows(df, firstMPy, MPs, varF, "T3", "var(F)")
+
+    # T4 Pr(C<0.1MSY)
+    PrCltp1MSY    <- round(apply(as.karray(MSEobj@C_MSY)[keep(MPs),keep(Sims),,projPeriod]<0.1, MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, PrCltp1MSY, "T4", "Pr(C<0.1MSY)")
+
+    # Y1 mean(C)
+    C             <-round(apply(as.karray(MSEobj@CM)[keep(MPs),keep(Sims),MSEobj@targpop,projPeriod], MARGIN=c(1:2), mean), 0)/1000
+    df            <- perfAddRows(df, firstMPy, MPs, C, "Y1", "mean(C)")
+
+    # Y3 mean(C/MSY)
+    CoMSY         <- round(apply(as.karray(MSEobj@C_MSY)[keep(MPs),keep(Sims),,projPeriod], MARGIN=c(1:2), mean), digits=2)
+    df            <- perfAddRows(df, firstMPy, MPs, CoMSY, "Y3", "mean(C/MSY)")
+
+    result.list[[paste(pp)]] <- as.data.table(df)
+  } #pp
+
+  return(result.list)
+}
+
+
 #DK modified summary for MWG statistics
 tableMSE.f <- function(object, percentiles=c(0.1,0.25,0.5,0.75,0.9), MPsSub=NA, nsimSub=NA)
 {
