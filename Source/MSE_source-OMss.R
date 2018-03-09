@@ -21,7 +21,9 @@ if(!require("keep"))install.packages("keep",repos="https://cloud.r-project.org")
 if(!require("stringr"))install.packages("stringr",repos="https://cloud.r-project.org")
 if(!require("r4ss"))install.packages("r4ss",repos="https://cloud.r-project.org")
 if(!require("ggplot2"))install.packages("r4ss",repos="https://cloud.r-project.org")
-if(!require("reshape2"))install.packages("r4ss",repos="https://cloud.r-project.org")
+if(!require("reshape2"))install.packages("reshape2",repos="https://cloud.r-project.org")
+if(!require("parallel"))install.packages("parallel",repos="https://cloud.r-project.org")
+if(!require("abind"))install.packages("abind",repos="https://cloud.r-project.org")
 
 
 library(parallel)
