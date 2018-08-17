@@ -1,3 +1,15 @@
+----------
+IMPORTANT!
+----------
+This is a legacy project. If the scope of this project interests you then
+please be directed to,
+
+https://github.com/pjumppanen/niMSE-IO-BET-YFT
+
+which is a superior implementation of the functionality of this project.
+This project is left here for historical reference.
+----------
+
 Due to file size limitations of github repositories the example conditioned
 model data files are not included. To obtain the necessary data files go to,
 
@@ -25,7 +37,7 @@ OS X or Linux by downloading the ADT project from https://github.com/pjumppanen/
 then from a command prompt, change directory to the root folder for the project
 and execute the following shell commands.
 
-chmod 755 ./*
+chmod -R 755 ./*
 ./init_config.sh
 ./configure --disable-tapenade --with-r-lib-path={path to the R shared library import lib} --with-r-include-path={path to the R include files}
 
